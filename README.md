@@ -10,6 +10,7 @@ duplicated (and drifted) between `ctech-dfe/api` and `ctech-wallet/api`:
 | `problem`   | RFC 7807 Problem Details — generic constructors (`BadRequest`, `NotFound`, `Validation`, ...)   |
 | `awsconfig` | AWS SDK v2 config load + DynamoDB client bootstrap (with local-endpoint override)               |
 | `ws`        | WebSocket connection registry, fanned out across instances via Valkey Pub/Sub                   |
+| `oauth2client` | Cached OAuth2 client_credentials token fetcher, shared across M2M callers                    |
 
 ## Import path
 
