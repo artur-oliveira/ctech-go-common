@@ -26,20 +26,51 @@ type valkeyPubSub interface {
 // Valkey Pub/Sub. Each instance holds local connections; Valkey is the
 // fan-out bus.
 type RedisRegistry struct {
-	client   valkeyPubSub
+	client valkeyPubSub
+	// dedicate, when set, hands listen() an exclusive connection for its
+	// long-lived Receive() loop instead of borrowing one out of the same
+	// multiplexed pool that Do() (cache reads/writes, Broadcast's Publish)
+	// keeps busy on every request. Sharing the pool let a subscription sit
+	// registered server-side (confirmed via PUBSUB NUMPAT) while messages
+	// never reached this process's callback — nil in tests, where the fake
+	// client's own Receive is exercised directly.
+	dedicate func() (valkey.DedicatedClient, func())
 	local    *MemoryRegistry
 	cancelFn context.CancelFunc
 }
 
 func NewRedisRegistry(client valkey.Client) *RedisRegistry {
 	return &RedisRegistry{
-		client: client,
-		local:  NewMemoryRegistry(),
+		client:   client,
+		dedicate: client.Dedicate,
+		local:    NewMemoryRegistry(),
 	}
 }
 
-func (r *RedisRegistry) Start(ctx context.Context) error {
-	listenCtx, cancel := context.WithCancel(ctx)
+// receiver is the minimal Receive-only surface listen() needs; both
+// valkeyPubSub and valkey.DedicatedClient satisfy it structurally.
+type receiver interface {
+	Receive(ctx context.Context, subscribe valkey.Completed, fn func(msg valkey.PubSubMessage)) error
+}
+
+// acquireReceiver returns the connection listen() should subscribe on, plus
+// a release func (nil when there is nothing to release, e.g. in tests).
+func (r *RedisRegistry) acquireReceiver() (receiver, func()) {
+	if r.dedicate == nil {
+		return r.client, nil
+	}
+	dc, cancel := r.dedicate()
+	return dc, cancel
+}
+
+// Start launches the background listen loop. It intentionally does not
+// derive from ctx: callers (e.g. uber-go/fx OnStart hooks) commonly pass a
+// context bound to their own startup deadline (fx's default is 15s) which
+// would silently kill this long-lived subscription the moment that deadline
+// passes, with no error logged — ctx.Done() short-circuits listen() before
+// its warning log. The loop's lifetime is instead governed solely by Stop().
+func (r *RedisRegistry) Start(_ context.Context) error {
+	listenCtx, cancel := context.WithCancel(context.Background())
 	r.cancelFn = cancel
 	go r.listen(listenCtx)
 	slog.Info("RedisRegistry started")
@@ -90,11 +121,15 @@ func (r *RedisRegistry) listen(ctx context.Context) {
 		default:
 		}
 
-		err := r.client.Receive(ctx, r.client.B().Psubscribe().Pattern(channelPrefix+"*").Build(), func(msg valkey.PubSubMessage) {
+		rcv, release := r.acquireReceiver()
+		err := rcv.Receive(ctx, r.client.B().Psubscribe().Pattern(channelPrefix+"*").Build(), func(msg valkey.PubSubMessage) {
 			retryDelay = time.Second
 			key := msg.Channel[len(channelPrefix):]
 			r.local.Broadcast(ctx, key, []byte(msg.Message))
 		})
+		if release != nil {
+			release()
+		}
 
 		if errors.Is(err, valkey.ErrClosing) || ctx.Err() != nil {
 			return
