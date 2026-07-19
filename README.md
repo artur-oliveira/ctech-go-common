@@ -11,6 +11,7 @@ duplicated (and drifted) between `ctech-dfe/api` and `ctech-wallet/api`:
 | `awsconfig` | AWS SDK v2 config load + DynamoDB client bootstrap (with local-endpoint override)               |
 | `ws`        | WebSocket connection registry, fanned out across instances via Valkey Pub/Sub                   |
 | `oauth2client` | Cached OAuth2 client_credentials token fetcher, shared across M2M callers                    |
+| `lock`      | CAS acquire/renew/release lock (Valkey + in-memory), for advisory locks and long-held leases     |
 
 ## Import path
 
