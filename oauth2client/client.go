@@ -14,12 +14,22 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	backend "gopkg.aoctech.app/api-commons/cache"
 )
 
 // TokenManager fetches and caches an OAuth2 client_credentials bearer token,
 // refreshing 30 seconds before its reported expiry.
+//
+// Pass a backend.RedisBackend for multi-instance deployments: replicas share
+// the token through it, so only one replica hits the token endpoint per
+// refresh window instead of every replica fetching its own. A nil backend
+// falls back to a single-instance in-memory cache (fine for tests or a
+// single-replica service, but each process then fetches independently).
 type TokenManager struct {
 	client       *http.Client
+	cache        backend.Backend
+	cacheKey     string
 	tokenURL     string
 	clientID     string
 	clientSecret string
@@ -31,18 +41,57 @@ type TokenManager struct {
 }
 
 // New builds a TokenManager. tokenURL is the full token endpoint URL.
-func New(httpClient *http.Client, tokenURL, clientID, clientSecret, scope string) *TokenManager {
-	return &TokenManager{client: httpClient, tokenURL: tokenURL, clientID: clientID, clientSecret: clientSecret, scope: scope}
+func New(
+	httpClient *http.Client,
+	cache backend.Backend,
+	tokenURL,
+	clientID,
+	clientSecret,
+	scope string,
+) *TokenManager {
+	if cache == nil {
+		cache = backend.NewMemoryBackend(1)
+	}
+	return &TokenManager{
+		client:       httpClient,
+		cache:        cache,
+		cacheKey:     "oauth2client:" + tokenURL + ":" + clientID + ":" + scope,
+		tokenURL:     tokenURL,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		scope:        scope,
+	}
+}
+
+// cachedToken is what gets stored in the shared cache backend — the local
+// token/expiry fields alone aren't enough since a *different* TokenManager
+// instance (another replica) needs the expiry to know the value is still
+// good without re-deriving it from a TTL the backend doesn't expose on Get.
+type cachedToken struct {
+	AccessToken string    `json:"access_token"`
+	Expiry      time.Time `json:"expiry"`
 }
 
 // Get returns a cached valid bearer token, fetching a new one if absent or
-// close to expiry.
+// close to expiry. Checks the in-process copy first (no cache round trip on
+// the hot path), then the shared cache backend (populated by this or any
+// other replica), and only calls the token endpoint on a full miss.
 func (t *TokenManager) Get(ctx context.Context) (string, error) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+
 	if t.token != "" && time.Now().Before(t.expiry) {
 		return t.token, nil
 	}
+
+	if raw, ok, err := t.cache.Get(ctx, t.cacheKey); err == nil && ok {
+		var ct cachedToken
+		if json.Unmarshal(raw, &ct) == nil && time.Now().Before(ct.Expiry) {
+			t.token, t.expiry = ct.AccessToken, ct.Expiry
+			return t.token, nil
+		}
+	}
+
 	form := url.Values{
 		"grant_type":    {"client_credentials"},
 		"client_id":     {t.clientID},
@@ -72,5 +121,10 @@ func (t *TokenManager) Get(ctx context.Context) (string, error) {
 	}
 	t.token = tr.AccessToken
 	t.expiry = time.Now().Add(time.Duration(tr.ExpiresIn-30) * time.Second)
+
+	if enc, err := json.Marshal(cachedToken{AccessToken: t.token, Expiry: t.expiry}); err == nil {
+		_ = t.cache.Set(ctx, t.cacheKey, enc, tr.ExpiresIn-30)
+	}
+
 	return t.token, nil
 }

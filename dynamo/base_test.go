@@ -98,6 +98,63 @@ func TestBase_BuildDeleteTxItem(t *testing.T) {
 	}
 }
 
+func TestBuildCompositeKeyCondition_EqPrefixAndBeginsWith(t *testing.T) {
+	cond, names, values := buildCompositeKeyCondition(CompositeQueryOpts{
+		PKField: "pk",
+		PK:      "USER#1",
+		SKEq: []KV{
+			{Field: "country", Value: "BR"},
+			{Field: "state", Value: "SP"},
+		},
+		SKLastField: "city",
+		SKLastOp:    "begins_with",
+		SKLastValue: "S",
+	})
+
+	want := "#pk = :pk AND #sk0 = :sk0 AND #sk1 = :sk1 AND begins_with(#skl, :skl)"
+	if cond != want {
+		t.Errorf("cond = %q, want %q", cond, want)
+	}
+	if names["#sk0"] != "country" || names["#sk1"] != "state" || names["#skl"] != "city" {
+		t.Errorf("unexpected names: %+v", names)
+	}
+	if values[":sk0"].(*types.AttributeValueMemberS).Value != "BR" {
+		t.Error("sk0 value not carried through")
+	}
+	if values[":skl"].(*types.AttributeValueMemberS).Value != "S" {
+		t.Error("skl value not carried through")
+	}
+}
+
+func TestBuildCompositeKeyCondition_Between(t *testing.T) {
+	cond, _, values := buildCompositeKeyCondition(CompositeQueryOpts{
+		PKField:      "pk",
+		PK:           "USER#1",
+		SKLastField:  "amount",
+		SKLastOp:     "between",
+		SKLastValue:  "10",
+		SKLastValue2: "20",
+	})
+
+	want := "#pk = :pk AND #skl BETWEEN :skl1 AND :skl2"
+	if cond != want {
+		t.Errorf("cond = %q, want %q", cond, want)
+	}
+	if values[":skl1"].(*types.AttributeValueMemberS).Value != "10" || values[":skl2"].(*types.AttributeValueMemberS).Value != "20" {
+		t.Errorf("unexpected between values: %+v", values)
+	}
+}
+
+func TestBuildCompositeKeyCondition_NoSK(t *testing.T) {
+	cond, names, _ := buildCompositeKeyCondition(CompositeQueryOpts{PKField: "pk", PK: "USER#1"})
+	if cond != "#pk = :pk" {
+		t.Errorf("cond = %q, want PK-only condition", cond)
+	}
+	if len(names) != 1 {
+		t.Errorf("expected only #pk name, got %+v", names)
+	}
+}
+
 func TestBase_UpsertAttrs_NoConditionExpression(t *testing.T) {
 	// UpsertAttrs must NOT carry attribute_exists(pk) — that's the entire point:
 	// it creates the row on first write instead of failing when absent.

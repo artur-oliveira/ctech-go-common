@@ -361,6 +361,12 @@ func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) 
 		input.ExpressionAttributeNames["#filter_field"] = opts.FilterField
 		input.ExpressionAttributeValues[":filter_value"] = &types.AttributeValueMemberS{Value: opts.FilterValue}
 	}
+	if opts.ProjectionExpression != "" {
+		input.ProjectionExpression = aws.String(opts.ProjectionExpression)
+	}
+	if opts.ConsistentRead {
+		input.ConsistentRead = aws.Bool(true)
+	}
 
 	out, err := b.db.Query(ctx, input)
 	if err != nil {
@@ -384,6 +390,11 @@ type QueryOpts struct {
 	// key isn't the org, back down to one org's rows. Both must be set together.
 	FilterField string
 	FilterValue string
+	// ProjectionExpression limits returned attributes (comma-separated,
+	// aliased names allowed) — set when the caller needs less than the full item.
+	ProjectionExpression string
+	// ConsistentRead requests a strongly consistent read. Not valid on a GSI.
+	ConsistentRead bool
 }
 
 func (o *QueryOpts) defaults() {
@@ -422,10 +433,158 @@ func (b *Base) QueryGSI(ctx context.Context, indexName, keyName, keyValue string
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
 }
 
+// KV is an attribute name/value pair, string-valued (equality only).
+type KV struct {
+	Field string
+	Value string
+}
+
+// CompositeQueryOpts configures QueryComposite: an equality condition on PK,
+// equality on zero or more leading sort-key attributes (schema order), and
+// an optional comparison on the next sort-key attribute — the left-to-right
+// pattern AWS's multi-attribute GSI composite keys are built for (up to 4 PK
+// + 4 SK attributes per index, e.g. PK=UserId, SK=Country,State,City: equality
+// on Country/State, begins_with/between/comparison on City).
+type CompositeQueryOpts struct {
+	PKField string // default "pk"
+	PK      string
+
+	IndexName string
+
+	// SKEq holds leading sort-key attributes queried by equality, in
+	// left-to-right schema order (e.g. {Country, "BR"}, {State, "SP"}).
+	SKEq []KV
+
+	// SKLast optionally narrows on the sort-key attribute right after SKEq.
+	// Op is one of "=", "<", "<=", ">", ">=", "begins_with", "between".
+	// SKLastField, SKLastValue2 unused unless Op is set; SKLastValue2 is
+	// only used for "between".
+	SKLastField  string
+	SKLastOp     string
+	SKLastValue  string
+	SKLastValue2 string
+
+	ScanIndexForward     bool
+	Limit                int
+	ExclusiveStartKey    map[string]types.AttributeValue
+	ProjectionExpression string
+	ConsistentRead       bool
+}
+
+// buildCompositeKeyCondition builds the KeyConditionExpression, aliased names,
+// and values for QueryComposite's PK-equality + ordered SK-attribute condition.
+func buildCompositeKeyCondition(opts CompositeQueryOpts) (string, map[string]string, map[string]types.AttributeValue) {
+	names := map[string]string{"#pk": opts.PKField}
+	values := map[string]types.AttributeValue{":pk": &types.AttributeValueMemberS{Value: opts.PK}}
+	cond := "#pk = :pk"
+
+	for i, kv := range opts.SKEq {
+		nameKey := fmt.Sprintf("#sk%d", i)
+		valKey := fmt.Sprintf(":sk%d", i)
+		names[nameKey] = kv.Field
+		values[valKey] = &types.AttributeValueMemberS{Value: kv.Value}
+		cond += fmt.Sprintf(" AND %s = %s", nameKey, valKey)
+	}
+
+	if opts.SKLastOp != "" {
+		names["#skl"] = opts.SKLastField
+		switch opts.SKLastOp {
+		case "begins_with":
+			values[":skl"] = &types.AttributeValueMemberS{Value: opts.SKLastValue}
+			cond += " AND begins_with(#skl, :skl)"
+		case "between":
+			values[":skl1"] = &types.AttributeValueMemberS{Value: opts.SKLastValue}
+			values[":skl2"] = &types.AttributeValueMemberS{Value: opts.SKLastValue2}
+			cond += " AND #skl BETWEEN :skl1 AND :skl2"
+		default:
+			values[":skl"] = &types.AttributeValueMemberS{Value: opts.SKLastValue}
+			cond += fmt.Sprintf(" AND #skl %s :skl", opts.SKLastOp)
+		}
+	}
+
+	return cond, names, values
+}
+
+// QueryComposite runs a Query across a composite (multi-attribute) key: PK
+// equality plus an ordered, left-to-right condition over the sort-key
+// attributes. Each attribute is aliased (#kN/:vN) so reserved words are safe
+// to use as attribute names.
+func (b *Base) QueryComposite(ctx context.Context, opts CompositeQueryOpts) (*QueryResult, error) {
+	if opts.PKField == "" {
+		opts.PKField = "pk"
+	}
+	if opts.Limit <= 0 {
+		opts.Limit = 100
+	}
+
+	cond, names, values := buildCompositeKeyCondition(opts)
+
+	input := &dynamodb.QueryInput{
+		TableName:                 aws.String(b.TableName),
+		KeyConditionExpression:    aws.String(cond),
+		ExpressionAttributeNames:  names,
+		ExpressionAttributeValues: values,
+		ScanIndexForward:          aws.Bool(opts.ScanIndexForward),
+		Limit:                     aws.Int32(int32(opts.Limit)),
+	}
+	if opts.IndexName != "" {
+		input.IndexName = aws.String(opts.IndexName)
+	}
+	if opts.ExclusiveStartKey != nil {
+		input.ExclusiveStartKey = opts.ExclusiveStartKey
+	}
+	if opts.ProjectionExpression != "" {
+		input.ProjectionExpression = aws.String(opts.ProjectionExpression)
+	}
+	if opts.ConsistentRead {
+		input.ConsistentRead = aws.Bool(true)
+	}
+
+	out, err := b.db.Query(ctx, input)
+	if err != nil {
+		return nil, wrapDynamoErr(err)
+	}
+	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
+}
+
 // UpdateItemRaw runs an arbitrary UpdateItem expression.
 func (b *Base) UpdateItemRaw(ctx context.Context, input *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
 	input.TableName = aws.String(b.TableName)
 	out, err := b.db.UpdateItem(ctx, input)
+	return out, wrapDynamoErr(err)
+}
+
+// PutItemRaw runs an arbitrary PutItem call (conditional puts, ReturnValues,
+// return-value-on-condition-failure, etc.) — the escape hatch for anything
+// PutItem doesn't cover.
+func (b *Base) PutItemRaw(ctx context.Context, input *dynamodb.PutItemInput) (*dynamodb.PutItemOutput, error) {
+	input.TableName = aws.String(b.TableName)
+	out, err := b.db.PutItem(ctx, input)
+	return out, wrapDynamoErr(err)
+}
+
+// DeleteItemRaw runs an arbitrary DeleteItem call (custom condition
+// expressions, ReturnValues, etc.).
+func (b *Base) DeleteItemRaw(ctx context.Context, input *dynamodb.DeleteItemInput) (*dynamodb.DeleteItemOutput, error) {
+	input.TableName = aws.String(b.TableName)
+	out, err := b.db.DeleteItem(ctx, input)
+	return out, wrapDynamoErr(err)
+}
+
+// QueryRaw runs an arbitrary Query call — composite key conditions on
+// multiple attributes, ProjectionExpression, Select, ConsistentRead, or any
+// other Query capability the typed Query/QueryGSI helpers don't expose.
+func (b *Base) QueryRaw(ctx context.Context, input *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
+	input.TableName = aws.String(b.TableName)
+	out, err := b.db.Query(ctx, input)
+	return out, wrapDynamoErr(err)
+}
+
+// ScanRaw runs an arbitrary Scan call. Prefer Query/QueryRaw — scans read the
+// whole table/index and don't belong in the hot path (see package docs).
+func (b *Base) ScanRaw(ctx context.Context, input *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {
+	input.TableName = aws.String(b.TableName)
+	out, err := b.db.Scan(ctx, input)
 	return out, wrapDynamoErr(err)
 }
 
@@ -435,6 +594,33 @@ func (b *Base) TransactWrite(ctx context.Context, items []types.TransactWriteIte
 		TransactItems: items,
 	})
 	return wrapDynamoErr(err)
+}
+
+// TransactGetItems executes a DynamoDB transactional read. Items carry their
+// own TableName (via types.Get), so this works across Base instances/tables
+// in one call, same as TransactWrite.
+func (b *Base) TransactGetItems(ctx context.Context, items []types.TransactGetItem) ([]types.ItemResponse, error) {
+	out, err := b.db.TransactGetItems(ctx, &dynamodb.TransactGetItemsInput{
+		TransactItems: items,
+	})
+	if err != nil {
+		return nil, wrapDynamoErr(err)
+	}
+	return out.Responses, nil
+}
+
+// BatchGetItemRaw runs an arbitrary BatchGetItem call. RequestItems is keyed
+// by table name, so it can span multiple tables in one call.
+func (b *Base) BatchGetItemRaw(ctx context.Context, input *dynamodb.BatchGetItemInput) (*dynamodb.BatchGetItemOutput, error) {
+	out, err := b.db.BatchGetItem(ctx, input)
+	return out, wrapDynamoErr(err)
+}
+
+// BatchWriteItemRaw runs an arbitrary BatchWriteItem call. RequestItems is
+// keyed by table name, so it can span multiple tables in one call.
+func (b *Base) BatchWriteItemRaw(ctx context.Context, input *dynamodb.BatchWriteItemInput) (*dynamodb.BatchWriteItemOutput, error) {
+	out, err := b.db.BatchWriteItem(ctx, input)
+	return out, wrapDynamoErr(err)
 }
 
 // AtomicIncrement increments a numeric field and returns the new value.
