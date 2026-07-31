@@ -100,3 +100,13 @@ auto-bump, so consumers pin different versions — `ctech-account/api`
 `wallet/api` `v1.2.0`), and `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api` on `v1.2.0`. Confirm a symbol's
 minimum version before using it in a lagging consumer.
 
+
+
+### JWT verification policy
+
+`jwtverify` accepts only RS256 access tokens (`token_use=access`). A published JWK must be RSA and, when it declares `use` or `alg`, must declare `sig` and `RS256`. Consumers must still provide issuer and audience in production.
+
+
+### JWT verification policy
+
+The shared verifier accepts only RS256 access tokens with token_use=access. Published JWKs must be RSA and, when metadata is present, declare sig and RS256. Production consumers must provide issuer and audience.

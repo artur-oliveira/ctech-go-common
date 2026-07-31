@@ -35,6 +35,8 @@ const (
 type jwk struct {
 	Kid string `json:"kid"`
 	Kty string `json:"kty"`
+	Use string `json:"use"`
+	Alg string `json:"alg"`
 	N   string `json:"n"`
 	E   string `json:"e"`
 }
@@ -117,11 +119,11 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 		parseOpts = append(parseOpts, jwt.WithIssuer(v.issuer))
 	}
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		if _, ok := t.Method.(*jwt.SigningMethodRSA); !ok {
+		if t.Method != jwt.SigningMethodRS256 {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return pubKey, nil
-	}, parseOpts...)
+	}, append(parseOpts, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))...)
 	if err != nil {
 		return nil, err
 	}
@@ -129,6 +131,9 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 	mc, ok := token.Claims.(jwt.MapClaims)
 	if !ok || !token.Valid {
 		return nil, fmt.Errorf("invalid claims")
+	}
+	if tokenUse, ok := mc["token_use"].(string); !ok || tokenUse != "access" {
+		return nil, fmt.Errorf("token_use claim missing or not access")
 	}
 
 	cl := &Claims{}
@@ -261,6 +266,9 @@ func fetchJWKSFromURL(ctx context.Context, jwksURL string) ([]jwk, error) {
 }
 
 func jwkToRSA(k *jwk) (*rsa.PublicKey, error) {
+	if k.Kid == "" || k.Kty != "RSA" || (k.Use != "" && k.Use != "sig") || (k.Alg != "" && k.Alg != jwt.SigningMethodRS256.Alg()) {
+		return nil, fmt.Errorf("unsupported JWK metadata for kid %q", k.Kid)
+	}
 	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
 	if err != nil {
 		return nil, fmt.Errorf("jwk: decode N: %w", err)

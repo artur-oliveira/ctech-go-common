@@ -75,11 +75,12 @@ func signToken(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClai
 
 func baseClaims(sub, issuer, audience string) jwt.MapClaims {
 	return jwt.MapClaims{
-		"sub": sub,
-		"iss": issuer,
-		"aud": []string{audience},
-		"iat": time.Now().Unix(),
-		"exp": time.Now().Add(time.Hour).Unix(),
+		"sub":       sub,
+		"iss":       issuer,
+		"aud":       []string{audience},
+		"iat":       time.Now().Unix(),
+		"exp":       time.Now().Add(time.Hour).Unix(),
+		"token_use": "access",
 	}
 }
 
