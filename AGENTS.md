@@ -68,3 +68,11 @@ contract until all are upgraded.
 ## Release
 
 Semver git tag only (`README.md` "Deploy"). No `go build` publish step; the proxy fetches source from the tagged commit.
+
+## Mandatory Documentation Policy
+
+**Every code change MUST be documented.**
+
+There are NO exceptions.
+
+Any modification affecting behavior, architecture, APIs, integrations, configuration, deployment, security, business rules, or developer workflow MUST include the corresponding documentation update in the same change.
