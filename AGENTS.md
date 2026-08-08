@@ -22,6 +22,13 @@ directly — that path is the backing repo and may move.
   `BuildPutTxItem` `:228`, `BuildPutTxItemIfAbsent` `:240`, `BuildUpdateTxItem`
   `:254`, `BuildRawUpdateTxItem` `:284` (relative math w/ condition), `BuildDeleteTxItem` `:307`.
   `Query` `:330` + `QueryOpts` `:373`, `QueryGSI` `:403`, `UpdateItemRaw` `:426`.
+  `QueryOpts` filters are typed pairs, never raw expressions: `FilterField`/`FilterValue` (equality) and
+  `FilterContainsField`/`FilterContainsValue` (`contains(#f, :v)`, for list membership such as
+  `persons.roles` holding `"driver"`). Both pairs set → ANDed by `buildFilterExpr`. The filtered attribute
+  must be projected into the queried index. A `FilterExpression` is applied **after** the key condition, so
+  `Limit` counts items *read*, not returned — a filtered query legitimately returns fewer than `Limit`
+  items alongside a `LastEvaluatedKey`; callers must treat an absent cursor, not a short page, as
+  end-of-list.
   `TransactWrite` `:433` — **requires the `dynamodb:TransactWriteItems` IAM permission**.
   `AtomicIncrement` `:441`, `Decode[T]` `:474`, `Encode` `:483`, `IsConditionFailed` `:518`
   (maps `TransactionCanceledException` too). `MarshalMapOmitNull` `dynamo/marshal.go:33`.

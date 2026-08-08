@@ -353,13 +353,17 @@ func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) 
 	if opts.ExclusiveStartKey != nil {
 		input.ExclusiveStartKey = opts.ExclusiveStartKey
 	}
-	if opts.FilterField != "" {
-		input.FilterExpression = aws.String("#filter_field = :filter_value")
+	if expr, names, values := buildFilterExpr(opts); expr != "" {
+		input.FilterExpression = aws.String(expr)
 		if input.ExpressionAttributeNames == nil {
 			input.ExpressionAttributeNames = make(map[string]string)
 		}
-		input.ExpressionAttributeNames["#filter_field"] = opts.FilterField
-		input.ExpressionAttributeValues[":filter_value"] = &types.AttributeValueMemberS{Value: opts.FilterValue}
+		for k, v := range names {
+			input.ExpressionAttributeNames[k] = v
+		}
+		for k, v := range values {
+			input.ExpressionAttributeValues[k] = v
+		}
 	}
 	if opts.ProjectionExpression != "" {
 		input.ProjectionExpression = aws.String(opts.ProjectionExpression)
@@ -373,6 +377,30 @@ func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) 
 		return nil, wrapDynamoErr(err)
 	}
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
+}
+
+// buildFilterExpr assembles the FilterExpression for a Query from the typed
+// filter pairs on QueryOpts, ANDing the clauses that are set. Returns an empty
+// expression when no filter pair is set.
+func buildFilterExpr(opts QueryOpts) (string, map[string]string, map[string]types.AttributeValue) {
+	var clauses []string
+	names := make(map[string]string)
+	values := make(map[string]types.AttributeValue)
+
+	if opts.FilterField != "" {
+		clauses = append(clauses, "#filter_field = :filter_value")
+		names["#filter_field"] = opts.FilterField
+		values[":filter_value"] = &types.AttributeValueMemberS{Value: opts.FilterValue}
+	}
+	if opts.FilterContainsField != "" {
+		clauses = append(clauses, "contains(#filter_contains_field, :filter_contains_value)")
+		names["#filter_contains_field"] = opts.FilterContainsField
+		values[":filter_contains_value"] = &types.AttributeValueMemberS{Value: opts.FilterContainsValue}
+	}
+	if len(clauses) == 0 {
+		return "", nil, nil
+	}
+	return strings.Join(clauses, " AND "), names, values
 }
 
 // QueryOpts configures a Query call.
@@ -390,6 +418,16 @@ type QueryOpts struct {
 	// key isn't the org, back down to one org's rows. Both must be set together.
 	FilterField string
 	FilterValue string
+	// FilterContainsField/FilterContainsValue apply a post-key-condition
+	// membership filter (contains(#f, :v)) — e.g. selecting rows whose list
+	// attribute holds a given element, such as persons.roles containing
+	// "driver". Both must be set together. Combined with FilterField/FilterValue
+	// via AND when both pairs are set.
+	//
+	// The attribute must be projected into the index being queried, otherwise
+	// DynamoDB cannot evaluate the filter.
+	FilterContainsField string
+	FilterContainsValue string
 	// ProjectionExpression limits returned attributes (comma-separated,
 	// aliased names allowed) — set when the caller needs less than the full item.
 	ProjectionExpression string

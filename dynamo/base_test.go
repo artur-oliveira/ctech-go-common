@@ -172,3 +172,71 @@ func TestBase_UpsertAttrs_NoConditionExpression(t *testing.T) {
 		t.Errorf("expected :consent_a value")
 	}
 }
+
+func TestBuildFilterExpr(t *testing.T) {
+	cases := []struct {
+		name     string
+		opts     QueryOpts
+		wantExpr string
+		wantVals map[string]string
+	}{
+		{
+			name:     "none",
+			opts:     QueryOpts{},
+			wantExpr: "",
+		},
+		{
+			name:     "equality only",
+			opts:     QueryOpts{FilterField: "org_pk", FilterValue: "CNPJ_1"},
+			wantExpr: "#filter_field = :filter_value",
+			wantVals: map[string]string{":filter_value": "CNPJ_1"},
+		},
+		{
+			name:     "contains only",
+			opts:     QueryOpts{FilterContainsField: "roles", FilterContainsValue: "driver"},
+			wantExpr: "contains(#filter_contains_field, :filter_contains_value)",
+			wantVals: map[string]string{":filter_contains_value": "driver"},
+		},
+		{
+			name: "both",
+			opts: QueryOpts{
+				FilterField:         "org_pk",
+				FilterValue:         "CNPJ_1",
+				FilterContainsField: "roles",
+				FilterContainsValue: "driver",
+			},
+			wantExpr: "#filter_field = :filter_value AND contains(#filter_contains_field, :filter_contains_value)",
+			wantVals: map[string]string{":filter_value": "CNPJ_1", ":filter_contains_value": "driver"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			expr, names, values := buildFilterExpr(tc.opts)
+			if expr != tc.wantExpr {
+				t.Fatalf("expr = %q, want %q", expr, tc.wantExpr)
+			}
+			if tc.wantExpr == "" {
+				if names != nil || values != nil {
+					t.Fatalf("expected nil maps for empty expression")
+				}
+				return
+			}
+			if tc.opts.FilterField != "" && names["#filter_field"] != tc.opts.FilterField {
+				t.Errorf("names[#filter_field] = %q", names["#filter_field"])
+			}
+			if tc.opts.FilterContainsField != "" && names["#filter_contains_field"] != tc.opts.FilterContainsField {
+				t.Errorf("names[#filter_contains_field] = %q", names["#filter_contains_field"])
+			}
+			if len(values) != len(tc.wantVals) {
+				t.Fatalf("values len = %d, want %d", len(values), len(tc.wantVals))
+			}
+			for k, want := range tc.wantVals {
+				got, ok := values[k].(*types.AttributeValueMemberS)
+				if !ok || got.Value != want {
+					t.Errorf("values[%s] = %v, want %q", k, values[k], want)
+				}
+			}
+		})
+	}
+}
