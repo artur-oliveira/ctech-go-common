@@ -3,7 +3,7 @@ module gopkg.aoctech.app/api-commons
 go 1.26
 
 require (
-	github.com/aws/aws-sdk-go-v2 v1.43.2
+	github.com/aws/aws-sdk-go-v2 v1.43.3
 	github.com/aws/aws-sdk-go-v2/config v1.32.33
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.56
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.62.2
