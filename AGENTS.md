@@ -58,16 +58,15 @@ See `README.md` "What's intentionally NOT here": `CRUDRepository[T]` (dfe-only),
 struct, fiscal/wallet `problem` constructors, and auth/JWT **middleware** (the trust models differ — only the validation
 primitive `jwtverify` is shared).
 
-## Consumer version skew (divergence — flag, do not "fix" unilaterally)
+## Consumer version skew
 
 The module is source-distributed via git tags (no auto-bump). Consumers currently pin **different**
 versions — confirm before relying on a symbol added after a given tag:
 
-| Consumer                                               | api-commons pin      | Note                                                 |
-|--------------------------------------------------------|----------------------|------------------------------------------------------|
-| `ctech-account/api`                                    | `v1.0.2`             | **B23** — behind                                     |
-| `ctech-wallet/pix-gateway`                             | `v1.1.0` // indirect | **B16** — indirect, older than `wallet/api` `v1.2.0` |
-| `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api` | `v1.2.0`             | current                                              |
+| Consumer                                                                         | api-commons pin |
+|----------------------------------------------------------------------------------|-----------------|
+| `ctech-account/api`                                                              | `v1.4.1`        |
+| `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api` | `v1.5.0`       |
 
 To add a symbol used by a lagging consumer, either bump that consumer's pin or keep the new symbol out of the shared
 contract until all are upgraded.

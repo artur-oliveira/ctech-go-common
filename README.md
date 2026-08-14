@@ -94,17 +94,10 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 | `ws`           | `Registry` `ws/registry.go:22`, `RedisRegistry` `ws/redis.go:28`, `MemoryRegistry` `ws/memory.go:11`                                                                                                    |
 | `awsconfig`    | `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25`                                                                                                                                           |
 
-**Consumer version skew (divergence — flag, don't unilaterally fix):** the module is git-tag source-distributed with no
-auto-bump, so consumers pin different versions — `ctech-account/api`
-`v1.0.2` (**B23**, behind), `ctech-wallet/pix-gateway` `v1.1.0` // indirect (**B16**, older than
-`wallet/api` `v1.2.0`), and `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api` on `v1.2.0`. Confirm a symbol's
-minimum version before using it in a lagging consumer.
+**Consumer version skew (verify before using a newly released symbol):** `ctech-account/api` currently pins `v1.4.1`;
+`ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, and `ctech-poker/api` pin `v1.5.0`. The module is
+git-tag source-distributed and has no automatic consumer bump, so confirm a symbol's minimum version before using it.
 
-
-
-### JWT verification policy
-
-`jwtverify` accepts only RS256 access tokens (`token_use=access`). A published JWK must be RSA and, when it declares `use` or `alg`, must declare `sig` and `RS256`. Consumers must still provide issuer and audience in production.
 
 
 ### JWT verification policy
