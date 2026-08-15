@@ -7,6 +7,9 @@ package jwtverify
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rsa"
 	"encoding/base64"
 	"encoding/json"
@@ -39,6 +42,9 @@ type jwk struct {
 	Alg string `json:"alg"`
 	N   string `json:"n"`
 	E   string `json:"e"`
+	Crv string `json:"crv"`
+	X   string `json:"x"`
+	Y   string `json:"y"`
 }
 
 type jwksResponse struct {
@@ -106,7 +112,7 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 		return nil, err
 	}
 
-	pubKey, err := v.keyForKID(ctx, kid)
+	pubKey, method, err := v.keyForKID(ctx, kid)
 	if err != nil {
 		return nil, err
 	}
@@ -119,11 +125,13 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 		parseOpts = append(parseOpts, jwt.WithIssuer(v.issuer))
 	}
 	token, err := jwt.Parse(tokenStr, func(t *jwt.Token) (any, error) {
-		if t.Method != jwt.SigningMethodRS256 {
+		// Cross-check against the algorithm THIS kid was resolved to — never
+		// trust the token's own alg header alone (alg-confusion guard).
+		if t.Method.Alg() != method.Alg() {
 			return nil, fmt.Errorf("unexpected signing method: %v", t.Header["alg"])
 		}
 		return pubKey, nil
-	}, append(parseOpts, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg()}))...)
+	}, append(parseOpts, jwt.WithValidMethods([]string{jwt.SigningMethodRS256.Alg(), jwt.SigningMethodES256.Alg()}))...)
 	if err != nil {
 		return nil, err
 	}
@@ -152,24 +160,24 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 // throttled JWKS refresh so a key rotation at the identity provider takes
 // effect immediately instead of after the cache TTL. An unresolvable kid is
 // rejected — never silently verified against some other key.
-func (v *Verifier) keyForKID(ctx context.Context, kid string) (*rsa.PublicKey, error) {
+func (v *Verifier) keyForKID(ctx context.Context, kid string) (crypto.PublicKey, jwt.SigningMethod, error) {
 	keys, err := v.fetchJWKS(ctx, false)
 	if err != nil {
-		return nil, fmt.Errorf("jwks unavailable: %w", err)
+		return nil, nil, fmt.Errorf("jwks unavailable: %w", err)
 	}
 	if k := findKID(keys, kid); k != nil {
-		return jwkToRSA(k)
+		return jwkToKey(k)
 	}
 
 	// Unknown kid: the provider may have rotated keys since we cached them.
 	keys, err = v.fetchJWKS(ctx, true)
 	if err != nil {
-		return nil, fmt.Errorf("jwks refresh failed: %w", err)
+		return nil, nil, fmt.Errorf("jwks refresh failed: %w", err)
 	}
 	if k := findKID(keys, kid); k != nil {
-		return jwkToRSA(k)
+		return jwkToKey(k)
 	}
-	return nil, fmt.Errorf("no signing key for kid %q", kid)
+	return nil, nil, fmt.Errorf("no signing key for kid %q", kid)
 }
 
 func findKID(keys []jwk, kid string) *jwk {
@@ -265,10 +273,33 @@ func fetchJWKSFromURL(ctx context.Context, jwksURL string) ([]jwk, error) {
 	return jwks.Keys, nil
 }
 
-func jwkToRSA(k *jwk) (*rsa.PublicKey, error) {
-	if k.Kid == "" || k.Kty != "RSA" || (k.Use != "" && k.Use != "sig") || (k.Alg != "" && k.Alg != jwt.SigningMethodRS256.Alg()) {
-		return nil, fmt.Errorf("unsupported JWK metadata for kid %q", k.Kid)
+// jwkToKey converts a JWK to its Go public key and the signing method a
+// token using this kid must be signed with. Only RSA and EC (P-256) keys are
+// accepted; anything else is rejected outright rather than silently ignored,
+// so an unsupported or malformed JWK never opens a verification gap.
+func jwkToKey(k *jwk) (crypto.PublicKey, jwt.SigningMethod, error) {
+	if k.Kid == "" || (k.Use != "" && k.Use != "sig") {
+		return nil, nil, fmt.Errorf("unsupported JWK metadata for kid %q", k.Kid)
 	}
+	switch k.Kty {
+	case "RSA":
+		if k.Alg != "" && k.Alg != jwt.SigningMethodRS256.Alg() {
+			return nil, nil, fmt.Errorf("unsupported JWK metadata for kid %q", k.Kid)
+		}
+		pub, err := jwkToRSA(k)
+		return pub, jwt.SigningMethodRS256, err
+	case "EC":
+		if k.Alg != "" && k.Alg != jwt.SigningMethodES256.Alg() {
+			return nil, nil, fmt.Errorf("unsupported JWK metadata for kid %q", k.Kid)
+		}
+		pub, err := jwkToEC(k)
+		return pub, jwt.SigningMethodES256, err
+	default:
+		return nil, nil, fmt.Errorf("unsupported JWK kty %q for kid %q", k.Kty, k.Kid)
+	}
+}
+
+func jwkToRSA(k *jwk) (*rsa.PublicKey, error) {
 	nBytes, err := base64.RawURLEncoding.DecodeString(k.N)
 	if err != nil {
 		return nil, fmt.Errorf("jwk: decode N: %w", err)
@@ -280,4 +311,23 @@ func jwkToRSA(k *jwk) (*rsa.PublicKey, error) {
 	n := new(big.Int).SetBytes(nBytes)
 	e := int(new(big.Int).SetBytes(eBytes).Int64())
 	return &rsa.PublicKey{N: n, E: e}, nil
+}
+
+func jwkToEC(k *jwk) (*ecdsa.PublicKey, error) {
+	if k.Crv != "P-256" {
+		return nil, fmt.Errorf("jwk: unsupported curve %q for kid %q", k.Crv, k.Kid)
+	}
+	xBytes, err := base64.RawURLEncoding.DecodeString(k.X)
+	if err != nil {
+		return nil, fmt.Errorf("jwk: decode X: %w", err)
+	}
+	yBytes, err := base64.RawURLEncoding.DecodeString(k.Y)
+	if err != nil {
+		return nil, fmt.Errorf("jwk: decode Y: %w", err)
+	}
+	return &ecdsa.PublicKey{
+		Curve: elliptic.P256(),
+		X:     new(big.Int).SetBytes(xBytes),
+		Y:     new(big.Int).SetBytes(yBytes),
+	}, nil
 }

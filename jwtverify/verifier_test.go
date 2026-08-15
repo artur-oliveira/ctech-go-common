@@ -2,6 +2,8 @@ package jwtverify_test
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"encoding/base64"
@@ -65,6 +67,32 @@ func (js *jwksServer) publish(pub *rsa.PublicKey, kid string) {
 func signToken(t *testing.T, key *rsa.PrivateKey, kid string, claims jwt.MapClaims) string {
 	t.Helper()
 	tok := jwt.NewWithClaims(jwt.SigningMethodRS256, claims)
+	tok.Header["kid"] = kid
+	signed, err := tok.SignedString(key)
+	if err != nil {
+		t.Fatalf("signing token: %v", err)
+	}
+	return signed
+}
+
+func (js *jwksServer) publishEC(pub *ecdsa.PublicKey, kid string) {
+	size := (pub.Curve.Params().BitSize + 7) / 8
+	x := make([]byte, size)
+	y := make([]byte, size)
+	pub.X.FillBytes(x)
+	pub.Y.FillBytes(y)
+	js.keys.Store([]map[string]any{{
+		"kty": "EC",
+		"kid": kid,
+		"crv": "P-256",
+		"x":   base64.RawURLEncoding.EncodeToString(x),
+		"y":   base64.RawURLEncoding.EncodeToString(y),
+	}})
+}
+
+func signES256Token(t *testing.T, key *ecdsa.PrivateKey, kid string, claims jwt.MapClaims) string {
+	t.Helper()
+	tok := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	tok.Header["kid"] = kid
 	signed, err := tok.SignedString(key)
 	if err != nil {
@@ -232,6 +260,36 @@ func TestFetchJWKS_ErrorResponseNotCached(t *testing.T) {
 	js.status.Store(http.StatusOK)
 	if _, err := v.VerifyClaims(context.Background(), token); err != nil {
 		t.Fatalf("expected recovery after JWKS endpoint returns, got %v", err)
+	}
+}
+
+func TestVerifyClaims_ES256Token(t *testing.T) {
+	key, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	js := newJWKSServer(t)
+	js.publishEC(&key.PublicKey, "ec-kid-1")
+
+	cl, err := newVerifier(js).VerifyClaims(context.Background(), signES256Token(t, key, "ec-kid-1", baseClaims("user-1", testIssuer, testAudience)))
+	if err != nil {
+		t.Fatalf("expected valid ES256 token, got %v", err)
+	}
+	if cl.Sub != "user-1" {
+		t.Errorf("expected sub user-1, got %q", cl.Sub)
+	}
+}
+
+// A token claiming an RSA kid must be rejected if it's actually signed with
+// ES256 — the algorithm is resolved from the kid's own JWK, never trusted
+// from the token's header alone.
+func TestVerifyClaims_AlgConfusion_RSAKidSignedES256_Rejected(t *testing.T) {
+	rsaKey, _ := rsa.GenerateKey(rand.Reader, 2048)
+	ecKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	js := newJWKSServer(t)
+	js.publish(&rsaKey.PublicKey, "shared-kid")
+
+	_, err := newVerifier(js).VerifyClaims(context.Background(),
+		signES256Token(t, ecKey, "shared-kid", baseClaims("attacker", testIssuer, testAudience)))
+	if err == nil {
+		t.Fatal("expected token signed with the wrong algorithm for its kid to be rejected")
 	}
 }
 
