@@ -45,6 +45,8 @@ directly — that path is the backing repo and may move.
   60s `:32`, `:150`.
 - `oauth2client` — cached `client_credentials` token fetcher. `TokenManager` `oauth2client/client.go:21`;
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
+- `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error
+  boundary. No OpenTelemetry/exporter dependency; consumers own domain classification and safe attributes.
 - `problem` — RFC 7807. `Problem` `problem/problem.go:34`, `FieldError` `:22`, type constants `:9-19`, constructors
   `BadRequest` `:57` … `InternalServer` `:93`, `Validation` `:83`.
 - `ws` — WebSocket registry fanned out via Valkey Pub/Sub. `Registry` iface `ws/registry.go:22`,

@@ -12,6 +12,7 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `ws`           | WebSocket connection registry, fanned out across instances via Valkey Pub/Sub                   |
 | `oauth2client` | Cached OAuth2 client_credentials token fetcher, shared across M2M callers                       |
 | `lock`         | CAS acquire/renew/release lock (Valkey + in-memory), for advisory locks and long-held leases    |
+| `observability` | Structured slog helpers, Request-ID context and Fiber correlation/error-boundary integration   |
 
 ## Import path
 
@@ -37,6 +38,17 @@ and `ctech-wallet` will switch their own module paths to
 - Auth/JWT middleware — `ctech-dfe`, `ctech-wallet`, and `ctech-account` have genuinely different trust models
   (multi-tenant RBAC vs. user+M2M vs. account's own OIDC core); only the underlying token validation primitives would
   ever be shared, and that extraction is out of scope here.
+
+## Error observability
+
+`observability` is the platform logging contract without OpenTelemetry or an exporter. `Error` and `Warn` attach
+`request_id` from `context.Context`; `LogHTTPError` records every HTTP rejection at `WARN` and every server failure at
+`ERROR`. `observability/fiber.RequestID` assigns or preserves `X-Request-ID`, echoes it in the response and propagates
+it into the Go context. Consumers keep domain-specific error classification and safe attributes locally.
+
+Internal causes can be attached to a shared RFC 7807 problem with `Problem.WithCause`. `cause` is unexported and is
+never serialized; Fiber-facing consumer wrappers log it before writing the safe public body. Logs must not contain
+credentials, tokens, cookies, request bodies, email addresses, tax identifiers or other unnecessary PII.
 
 ## Development
 

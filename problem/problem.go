@@ -40,6 +40,9 @@ type Problem struct {
 	MaxAgeSeconds int          `json:"max_age_seconds,omitempty"`
 	MinAmount     int64        `json:"min_amount,omitempty"`
 	MaxAmount     int64        `json:"max_amount,omitempty"`
+
+	// cause is available to the HTTP logging boundary but is never serialized.
+	cause error
 }
 
 func (p *Problem) Error() string {
@@ -48,6 +51,17 @@ func (p *Problem) Error() string {
 	}
 	return p.Title
 }
+
+// WithCause preserves an internal failure without exposing it in the RFC 7807
+// response. Consumer wrappers should return their own type after delegating to
+// this method when fluent chaining is needed.
+func (p *Problem) WithCause(err error) *Problem {
+	p.cause = err
+	return p
+}
+
+// Cause returns the internal error associated with this safe public problem.
+func (p *Problem) Cause() error { return p.cause }
 
 // New builds a Problem with the given status, type URI, title, and detail.
 func New(status int, typ, title, detail string) *Problem {
