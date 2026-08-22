@@ -37,7 +37,7 @@ func RequestID(config ...RequestIDConfig) fiber.Handler {
 	return func(c fiber.Ctx) error {
 		requestID := c.Get(cfg.Header)
 		if !validRequestID(requestID) {
-			requestID = cfg.Generator()
+			requestID = generatedRequestID(cfg.Generator)
 		}
 		c.Set(cfg.Header, requestID)
 		if cfg.LocalsKey != nil {
@@ -46,6 +46,15 @@ func RequestID(config ...RequestIDConfig) fiber.Handler {
 		c.SetContext(observability.WithRequestID(c.Context(), requestID))
 		return c.Next()
 	}
+}
+
+func generatedRequestID(generator func() string) string {
+	for range 3 {
+		if requestID := generator(); validRequestID(requestID) {
+			return requestID
+		}
+	}
+	return requestid.ConfigDefault.Generator()
 }
 
 // LogHTTPError records an HTTP rejection/failure with method, path, problem

@@ -1,7 +1,10 @@
 package problem
 
 import (
+	"encoding/json"
+	"errors"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -18,6 +21,20 @@ func TestNew(t *testing.T) {
 	}
 	if p.Detail != "duplicate entry" {
 		t.Errorf("Detail = %q, want %q", p.Detail, "duplicate entry")
+	}
+}
+
+func TestCauseIsAvailableButNeverSerialized(t *testing.T) {
+	p := InternalServer("safe public detail").WithCause(errors.New("database password leaked"))
+	if got := p.Cause(); got == nil || got.Error() != "database password leaked" {
+		t.Fatalf("Cause() = %v", got)
+	}
+	payload, err := json.Marshal(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(payload), "database password leaked") {
+		t.Fatalf("private cause serialized: %s", payload)
 	}
 }
 

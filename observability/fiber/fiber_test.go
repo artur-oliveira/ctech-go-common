@@ -50,6 +50,21 @@ func TestRequestIDReplacesUnsafeHeaderAndStoresLocal(t *testing.T) {
 	}
 }
 
+func TestRequestIDReplacesUnsafeGeneratedValue(t *testing.T) {
+	app := fiberapi.New()
+	app.Use(RequestID(RequestIDConfig{Generator: func() string { return "contains space" }}))
+	app.Get("/", func(c fiberapi.Ctx) error { return nil })
+
+	resp, err := app.Test(httptest.NewRequest("GET", "/", nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get(RequestIDHeader); !validRequestID(got) {
+		t.Fatalf("fallback request ID = %q, want a valid value", got)
+	}
+}
+
 func TestLogHTTPErrorAcceptsCause(t *testing.T) {
 	app := fiberapi.New()
 	app.Use(RequestID(RequestIDConfig{Generator: func() string { return "req-test" }}))
