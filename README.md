@@ -107,9 +107,9 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 | `awsconfig`    | `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25`                                                                                                                                           |
 
 **Consumer version skew (verify before using a newly released symbol):** the coordinated observability rollout moves
-`ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api`, and `ctech-billing/api` to `v1.7.0`;
-`ctech-wallet/pix-gateway` remains on `v1.6.0`. The module is git-tag source-distributed and has no automatic consumer
-bump, so publish the `v1.7.0` tag before resolving consumer dependencies outside a local Go workspace.
+`ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`, and
+`ctech-billing/api` to the published `v1.7.2`. The module is git-tag source-distributed and has no automatic consumer
+bump, so confirm the tag is reachable before resolving consumer dependencies outside a local Go workspace.
 
 
 

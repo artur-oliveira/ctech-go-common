@@ -67,8 +67,7 @@ versions — confirm before relying on a symbol added after a given tag:
 
 | Consumer                                                                         | api-commons pin |
 |----------------------------------------------------------------------------------|-----------------|
-| `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api`, `ctech-billing/api` | `v1.7.0` (coordinated release) |
-| `ctech-wallet/pix-gateway`                                                       | `v1.6.0`        |
+| `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`, `ctech-billing/api` | `v1.7.2` |
 
 To add a symbol used by a lagging consumer, either bump that consumer's pin or keep the new symbol out of the shared
 contract until all are upgraded.
