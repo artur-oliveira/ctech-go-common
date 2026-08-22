@@ -8,7 +8,7 @@ require (
 	github.com/aws/aws-sdk-go-v2/feature/dynamodb/attributevalue v1.20.56
 	github.com/aws/aws-sdk-go-v2/service/dynamodb v1.62.2
 	github.com/golang-jwt/jwt/v5 v5.3.1
-	github.com/valkey-io/valkey-go v1.0.76
+	github.com/valkey-io/valkey-go v1.0.77
 )
 
 require (
