@@ -13,6 +13,8 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `oauth2client` | Cached OAuth2 client_credentials token fetcher, shared across M2M callers                       |
 | `lock`         | CAS acquire/renew/release lock (Valkey + in-memory), for advisory locks and long-held leases    |
 | `observability` | Structured slog helpers, Request-ID context and Fiber correlation/error-boundary integration   |
+| `email`        | SESv2 transport: one HTML send and a raw send for threaded mail. Templates stay in each service  |
+| `alerts`       | Operator alerts published to an SNS topic — the cheap replacement for per-metric CloudWatch alarms |
 
 ## Import path
 
