@@ -2,15 +2,29 @@ package ws
 
 import (
 	"context"
+	"encoding/binary"
 	"log/slog"
 	"sync"
 )
+
+const (
+	closeMessageType = 8
+	goingAwayCode   = 1001
+)
+
+var goingAwayPayload = func() []byte {
+	payload := make([]byte, 2+len("server restarting"))
+	binary.BigEndian.PutUint16(payload, goingAwayCode)
+	copy(payload[2:], "server restarting")
+	return payload
+}()
 
 // MemoryRegistry is a single-instance connection registry. Use RedisRegistry
 // to fan out across multiple API instances.
 type MemoryRegistry struct {
 	mu    sync.Mutex
 	conns map[string]map[string]Conn // key → connID → conn
+	draining bool
 }
 
 func NewMemoryRegistry() *MemoryRegistry {
@@ -20,11 +34,41 @@ func NewMemoryRegistry() *MemoryRegistry {
 // Start is a no-op; MemoryRegistry has no background process to run.
 func (m *MemoryRegistry) Start(_ context.Context) error { return nil }
 
-// Stop is a no-op; MemoryRegistry has no background process to stop.
-func (m *MemoryRegistry) Stop(_ context.Context) error { return nil }
+// Stop rejects new registrations and asks connected clients to reconnect.
+func (m *MemoryRegistry) Stop(ctx context.Context) error {
+	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		return nil
+	}
+	m.draining = true
+	connections := make([]Conn, 0)
+	for _, group := range m.conns {
+		for _, conn := range group {
+			connections = append(connections, conn)
+		}
+	}
+	m.conns = make(map[string]map[string]Conn)
+	m.mu.Unlock()
+
+	for _, conn := range connections {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := conn.WriteMessage(closeMessageType, goingAwayPayload); err != nil {
+			slog.Debug("ws graceful close failed", "err", err)
+		}
+	}
+	return nil
+}
 
 func (m *MemoryRegistry) Register(key, connID string, conn Conn) {
 	m.mu.Lock()
+	if m.draining {
+		m.mu.Unlock()
+		_ = conn.WriteMessage(closeMessageType, goingAwayPayload)
+		return
+	}
 	defer m.mu.Unlock()
 	if _, ok := m.conns[key]; !ok {
 		m.conns[key] = make(map[string]Conn)
