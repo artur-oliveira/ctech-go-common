@@ -8,15 +8,35 @@ import (
 
 type fakeConn struct {
 	written [][]byte
+	types   []int
 	failAt  int // WriteMessage fails once written reaches this count
 }
 
-func (f *fakeConn) WriteMessage(_ int, data []byte) error {
+func (f *fakeConn) WriteMessage(messageType int, data []byte) error {
 	if f.failAt > 0 && len(f.written) >= f.failAt {
 		return errors.New("write failed")
 	}
 	f.written = append(f.written, data)
+	f.types = append(f.types, messageType)
 	return nil
+}
+
+func TestMemoryRegistryStopClosesExistingAndLateConnections(t *testing.T) {
+	r := NewMemoryRegistry()
+	existing := &fakeConn{}
+	r.Register("key1", "conn1", existing)
+	if err := r.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	if len(existing.types) != 1 || existing.types[0] != closeMessageType {
+		t.Fatalf("existing connection message types = %v", existing.types)
+	}
+
+	late := &fakeConn{}
+	r.Register("key1", "conn2", late)
+	if len(late.types) != 1 || late.types[0] != closeMessageType {
+		t.Fatalf("late connection message types = %v", late.types)
+	}
 }
 
 func TestMemoryRegistryBroadcastReachesRegisteredConn(t *testing.T) {

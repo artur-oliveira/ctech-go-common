@@ -77,12 +77,13 @@ func (r *RedisRegistry) Start(_ context.Context) error {
 	return nil
 }
 
-func (r *RedisRegistry) Stop(_ context.Context) error {
+func (r *RedisRegistry) Stop(ctx context.Context) error {
+	err := r.local.Stop(ctx)
 	if r.cancelFn != nil {
 		r.cancelFn()
 	}
 	slog.Info("RedisRegistry stopped")
-	return nil
+	return err
 }
 
 func (r *RedisRegistry) Register(key, connID string, conn Conn) {
