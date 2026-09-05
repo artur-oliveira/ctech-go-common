@@ -6,7 +6,7 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | Package        | What it holds                                                                                   |
 |----------------|-------------------------------------------------------------------------------------------------|
 | `cache`        | `Backend` interface + in-memory and Valkey implementations                                      |
-| `dynamo`       | DynamoDB persistence primitives (`Base`, `Query`, transact-item builders, `MarshalMapOmitNull`) |
+| `dynamo`       | DynamoDB persistence primitives (`Base`, `Query`, transact-item builders, `MarshalMapOmitNull`, sampled `SetCapacityRecorder`) |
 | `problem`      | RFC 7807 Problem Details — generic constructors (`BadRequest`, `NotFound`, `Validation`, ...)   |
 | `awsconfig`    | AWS SDK v2 config load + DynamoDB client bootstrap (with local-endpoint override)               |
 | `ws`           | WebSocket connection registry, fanned out across instances via Valkey Pub/Sub                   |

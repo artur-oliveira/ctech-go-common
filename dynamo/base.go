@@ -58,13 +58,18 @@ func (b *Base) GetItem(ctx context.Context, pk string, sk ...string) (map[string
 		key["sk"] = &types.AttributeValueMemberS{Value: sk[0]}
 	}
 
-	out, err := b.db.GetItem(ctx, &dynamodb.GetItemInput{
+	input := &dynamodb.GetItemInput{
 		TableName: aws.String(b.TableName),
 		Key:       key,
-	})
+	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
+	out, err := b.db.GetItem(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
+	recordConsumed(OpGetItem, out.ConsumedCapacity)
 	if out.Item == nil {
 		return nil, nil
 	}
@@ -74,13 +79,18 @@ func (b *Base) GetItem(ctx context.Context, pk string, sk ...string) (map[string
 // GetItemByRawKey fetches a single item using a caller-supplied key map.
 // Use when the sort key is not a standard string "sk" field (e.g. numeric NSU).
 func (b *Base) GetItemByRawKey(ctx context.Context, key map[string]types.AttributeValue) (map[string]types.AttributeValue, error) {
-	out, err := b.db.GetItem(ctx, &dynamodb.GetItemInput{
+	input := &dynamodb.GetItemInput{
 		TableName: aws.String(b.TableName),
 		Key:       key,
-	})
+	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
+	out, err := b.db.GetItem(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
+	recordConsumed(OpGetItem, out.ConsumedCapacity)
 	if out.Item == nil {
 		return nil, nil
 	}
@@ -155,14 +165,18 @@ func (b *Base) UpdateItem(ctx context.Context, pk string, sk *string, updates ma
 	if len(exprValues) > 0 {
 		input.ExpressionAttributeValues = exprValues
 	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 
-	_, err = b.db.UpdateItem(ctx, input)
+	out, err := b.db.UpdateItem(ctx, input)
 	if err != nil {
 		if isConditionFailed(err) {
 			return false, nil
 		}
 		return false, wrapDynamoErr(err)
 	}
+	recordConsumed(OpUpdateItem, out.ConsumedCapacity)
 	return true, nil
 }
 
@@ -195,9 +209,16 @@ func (b *Base) UpsertAttrs(ctx context.Context, pk string, sk *string, updates m
 	if len(exprValues) > 0 {
 		input.ExpressionAttributeValues = exprValues
 	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 
-	_, err = b.db.UpdateItem(ctx, input)
-	return wrapDynamoErr(err)
+	out, err := b.db.UpdateItem(ctx, input)
+	if err != nil {
+		return wrapDynamoErr(err)
+	}
+	recordConsumed(OpUpdateItem, out.ConsumedCapacity)
+	return nil
 }
 
 // DeleteItem removes an item. Returns false if not found.
@@ -371,11 +392,15 @@ func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) 
 	if opts.ConsistentRead {
 		input.ConsistentRead = aws.Bool(true)
 	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 
 	out, err := b.db.Query(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
+	recordConsumed(OpQuery, out.ConsumedCapacity)
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
 }
 
@@ -464,10 +489,14 @@ func (b *Base) QueryGSI(ctx context.Context, indexName, keyName, keyValue string
 	if startKey != nil {
 		input.ExclusiveStartKey = startKey
 	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 	out, err := b.db.Query(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
+	recordConsumed(OpQuery, out.ConsumedCapacity)
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
 }
 
@@ -577,18 +606,28 @@ func (b *Base) QueryComposite(ctx context.Context, opts CompositeQueryOpts) (*Qu
 	if opts.ConsistentRead {
 		input.ConsistentRead = aws.Bool(true)
 	}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 
 	out, err := b.db.Query(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
+	recordConsumed(OpQuery, out.ConsumedCapacity)
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
 }
 
 // UpdateItemRaw runs an arbitrary UpdateItem expression.
 func (b *Base) UpdateItemRaw(ctx context.Context, input *dynamodb.UpdateItemInput) (*dynamodb.UpdateItemOutput, error) {
 	input.TableName = aws.String(b.TableName)
+	if wantCapacity() && input.ReturnConsumedCapacity == "" {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 	out, err := b.db.UpdateItem(ctx, input)
+	if err == nil {
+		recordConsumed(OpUpdateItem, out.ConsumedCapacity)
+	}
 	return out, wrapDynamoErr(err)
 }
 
@@ -614,7 +653,13 @@ func (b *Base) DeleteItemRaw(ctx context.Context, input *dynamodb.DeleteItemInpu
 // other Query capability the typed Query/QueryGSI helpers don't expose.
 func (b *Base) QueryRaw(ctx context.Context, input *dynamodb.QueryInput) (*dynamodb.QueryOutput, error) {
 	input.TableName = aws.String(b.TableName)
+	if wantCapacity() && input.ReturnConsumedCapacity == "" {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 	out, err := b.db.Query(ctx, input)
+	if err == nil {
+		recordConsumed(OpQuery, out.ConsumedCapacity)
+	}
 	return out, wrapDynamoErr(err)
 }
 
@@ -628,10 +673,16 @@ func (b *Base) ScanRaw(ctx context.Context, input *dynamodb.ScanInput) (*dynamod
 
 // TransactWrite executes a DynamoDB transact write with the provided items.
 func (b *Base) TransactWrite(ctx context.Context, items []types.TransactWriteItem) error {
-	_, err := b.db.TransactWriteItems(ctx, &dynamodb.TransactWriteItemsInput{
-		TransactItems: items,
-	})
-	return wrapDynamoErr(err)
+	input := &dynamodb.TransactWriteItemsInput{TransactItems: items}
+	if wantCapacity() {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
+	out, err := b.db.TransactWriteItems(ctx, input)
+	if err != nil {
+		return wrapDynamoErr(err)
+	}
+	recordConsumedMany(OpTransactWrite, out.ConsumedCapacity)
+	return nil
 }
 
 // TransactGetItems executes a DynamoDB transactional read. Items carry their
@@ -650,7 +701,13 @@ func (b *Base) TransactGetItems(ctx context.Context, items []types.TransactGetIt
 // BatchGetItemRaw runs an arbitrary BatchGetItem call. RequestItems is keyed
 // by table name, so it can span multiple tables in one call.
 func (b *Base) BatchGetItemRaw(ctx context.Context, input *dynamodb.BatchGetItemInput) (*dynamodb.BatchGetItemOutput, error) {
+	if wantCapacity() && input.ReturnConsumedCapacity == "" {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
 	out, err := b.db.BatchGetItem(ctx, input)
+	if err == nil {
+		recordConsumedMany(OpBatchGetItem, out.ConsumedCapacity)
+	}
 	return out, wrapDynamoErr(err)
 }
 
