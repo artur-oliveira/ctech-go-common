@@ -53,6 +53,14 @@ directly — that path is the backing repo and may move.
   `Conn` `:17`; `RedisRegistry` `ws/redis.go:28` (`NewRedisRegistry` `:42`, `Start` `:72`,
   `Broadcast` `:97`, `listen` `:115` auto-resubscribe), `MemoryRegistry` `ws/memory.go:11` (single-instance).
 - `awsconfig` — `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25` (local-endpoint override).
+- `drain` — graceful-shutdown coordinator for long-lived connections. `Tracker` `drain/tracker.go:16` (zero value
+  ready to use); `Register` `:23` (rejects after drain starts), `Unregister` `:40`, `Draining` `:47`, `Drain` `:55`
+  (idempotent; calls every registered `CloseFunc` and joins their errors). Callers own wiring this to their own
+  SIGTERM/signal handler — this package has no signal-handling code itself.
+- `ratelimit` — transport-agnostic, Valkey-backed rate limiter core (extracted from ctech-account's middleware).
+  `Limiter` `ratelimit/ratelimit.go:41` (`Counter`, `Prefix`, `Max`, `Window`, `FailClosed`); `Take` `:59` (throughput
+  guard, atomic incr+decide); brute-force guard via `CheckFailures`/`RecordFailure` in `ratelimit/counter.go`.
+  `FailClosed` degrades a counter error to `Unavailable` (503), never to unbounded allow, on auth surfaces.
 
 ## Intentionally NOT here
 
@@ -65,9 +73,14 @@ primitive `jwtverify` is shared).
 The module is source-distributed via git tags (no auto-bump). Consumers currently pin **different**
 versions — confirm before relying on a symbol added after a given tag:
 
-| Consumer                                                                         | api-commons pin |
-|----------------------------------------------------------------------------------|-----------------|
-| `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`, `ctech-billing/api` | `v1.7.2` |
+| Consumer                        | api-commons pin |
+|---------------------------------|-----------------|
+| `ctech-account/api`             | `v1.9.1`        |
+| `ctech-dfe/api`                 | `v1.9.1`        |
+| `ctech-wallet/api`              | `v1.9.1`        |
+| `ctech-wallet/pix-gateway`      | `v1.7.2` (lagging) |
+| `ctech-poker/api`               | `v1.9.2`        |
+| `ctech-billing/api`             | `v1.8.0`        |
 
 To add a symbol used by a lagging consumer, either bump that consumer's pin or keep the new symbol out of the shared
 contract until all are upgraded.

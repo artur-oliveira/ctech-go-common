@@ -1,5 +1,10 @@
 # ctech-go-common
 
+This is a shared foundation library consumed by every CTech Go service — treat every change here (defaults,
+behavior, error semantics, cache/lock backends) as a cross-repo contract change, not a local tweak. Confirmed
+consumers today: `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`,
+and `ctech-billing/api` (see "Consumer version skew" below for exact pins).
+
 Shared Go module for the CTech platform. Reconciles internal packages that were independently duplicated (and drifted)
 between `ctech-dfe/api` and `ctech-wallet/api`:
 
@@ -15,6 +20,8 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `observability` | Structured slog helpers, Request-ID context and Fiber correlation/error-boundary integration   |
 | `email`        | SESv2 transport: one HTML send and a raw send for threaded mail. Templates stay in each service  |
 | `alerts`       | Operator alerts published to an SNS topic — the cheap replacement for per-metric CloudWatch alarms |
+| `drain`        | `Tracker` coordinates graceful shutdown of long-lived connections (e.g. websockets): register/unregister a per-connection `CloseFunc`, `Drain` asks every live connection to reconnect elsewhere. Callers wire it to their own SIGTERM handler |
+| `ratelimit`    | Transport-agnostic, Valkey-backed rate limiter core (throughput-guard `Take` and brute-force-guard `CheckFailures`/`RecordFailure` shapes); each API wraps a `Limiter` in its own thin HTTP middleware |
 
 ## Import path
 
@@ -108,10 +115,12 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 | `ws`           | `Registry` `ws/registry.go:22`, `RedisRegistry` `ws/redis.go:28`, `MemoryRegistry` `ws/memory.go:11`                                                                                                    |
 | `awsconfig`    | `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25`                                                                                                                                           |
 
-**Consumer version skew (verify before using a newly released symbol):** the coordinated observability rollout moves
-`ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`, and
-`ctech-billing/api` to the published `v1.7.2`. The module is git-tag source-distributed and has no automatic consumer
-bump, so confirm the tag is reachable before resolving consumer dependencies outside a local Go workspace.
+**Consumer version skew (verify before using a newly released symbol):** consumers currently pin different tags —
+`ctech-account/api` and `ctech-dfe/api` at `v1.9.1`, `ctech-wallet/api` at `v1.9.1`, `ctech-wallet/pix-gateway` at
+`v1.7.2` (lagging), `ctech-poker/api` at `v1.9.2`, and `ctech-billing/api` at `v1.8.0`. The module is git-tag
+source-distributed and has no automatic consumer bump, so confirm each consumer's actual pin in its `go.mod` before
+relying on a symbol added after an older tag — `pix-gateway` in particular is several releases behind its sibling
+`ctech-wallet/api`.
 
 
 
