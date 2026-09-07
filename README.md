@@ -55,6 +55,14 @@ and `ctech-wallet` will switch their own module paths to
 `ERROR`. `observability/fiber.RequestID` assigns or preserves `X-Request-ID`, echoes it in the response and propagates
 it into the Go context. Consumers keep domain-specific error classification and safe attributes locally.
 
+A problem can also carry **structured recovery guidance**: `Problem.WithNextAction(action, retryAfterSeconds)` sets
+the RFC 9457 extension members `next_action` (one of `NextActionRetry`, `NextActionWait`,
+`NextActionReauthenticate`, `NextActionContactSupport`) and `retry_after_seconds`, so a client can recover on its own
+instead of pattern-matching on `detail`. Both are omitted unless set, and `retryAfterSeconds` 0 means "unknown" and
+stays omitted — a fabricated window is worse than none, because clients back off on whatever number is there. Only
+set it where the service actually knows the answer; `TooManyRequestsAfter(detail, seconds)` does it for the one case
+that always knows (a rate limiter and its own window).
+
 Internal causes can be attached to a shared RFC 7807 problem with `Problem.WithCause`. `cause` is unexported and is
 never serialized; Fiber-facing consumer wrappers log it before writing the safe public body. Logs must not contain
 credentials, tokens, cookies, request bodies, email addresses, tax identifiers or other unnecessary PII.
@@ -111,7 +119,7 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 | `lock`         | `Locker` `lock/lock.go:45`, `AcquireOrdered` `:103` (deadlock-free), `StartHeartbeat` `:155`                                                                                                            |
 | `jwtverify`    | `Verifier` `jwtverify/verifier.go:72`, `VerifyClaims` `:101`, `Claims` `:48`                                                                                                                            |
 | `oauth2client` | `TokenManager` `oauth2client/client.go:21`, `Get` `:40` (refreshes 30s early)                                                                                                                           |
-| `problem`      | `Problem` `problem/problem.go:34`, constructors `BadRequest` `:57` … `InternalServer` `:93`                                                                                                             |
+| `problem`      | `Problem` `problem/problem.go`, constructors `BadRequest` … `InternalServer`, `TooManyRequestsAfter`, `WithNextAction`                                                                                  |
 | `ws`           | `Registry` `ws/registry.go:22`, `RedisRegistry` `ws/redis.go:28`, `MemoryRegistry` `ws/memory.go:11`                                                                                                    |
 | `awsconfig`    | `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25`                                                                                                                                           |
 

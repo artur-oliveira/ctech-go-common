@@ -73,3 +73,44 @@ func TestInternalServer(t *testing.T) {
 		t.Errorf("Status = %d, want %d", p.Status, http.StatusInternalServerError)
 	}
 }
+
+func TestTooManyRequestsCarriesRetryGuidance(t *testing.T) {
+	p := TooManyRequestsAfter("slow down", 30)
+	if p.NextAction != NextActionRetry || p.RetryAfterSeconds != 30 {
+		t.Fatalf("next_action=%q retry_after=%d", p.NextAction, p.RetryAfterSeconds)
+	}
+	body, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(body), `"next_action":"retry"`) || !strings.Contains(string(body), `"retry_after_seconds":30`) {
+		t.Fatalf("body=%s", body)
+	}
+}
+
+// An unknown window must not become a fabricated one: clients back off on
+// whatever number is there, so 0 stays omitted entirely.
+func TestUnknownRetryWindowIsOmitted(t *testing.T) {
+	body, err := json.Marshal(TooManyRequests("slow down"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "retry_after_seconds") {
+		t.Fatalf("body=%s", body)
+	}
+	if !strings.Contains(string(body), `"next_action":"retry"`) {
+		t.Fatalf("body=%s", body)
+	}
+}
+
+// Every other problem stays exactly as it was — the extension members are
+// omitted unless a service opts in.
+func TestProblemsWithoutGuidanceOmitTheFields(t *testing.T) {
+	body, err := json.Marshal(BadRequest("nope"))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(body), "next_action") || strings.Contains(string(body), "retry_after_seconds") {
+		t.Fatalf("body=%s", body)
+	}
+}
