@@ -47,8 +47,11 @@ directly — that path is the backing repo and may move.
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
 - `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error
   boundary. No OpenTelemetry/exporter dependency; consumers own domain classification and safe attributes.
-- `problem` — RFC 7807. `Problem` `problem/problem.go:34`, `FieldError` `:22`, type constants `:9-19`, constructors
-  `BadRequest` `:57` … `InternalServer` `:93`, `Validation` `:83`.
+- `problem` — RFC 7807/9457. `Problem` `problem/problem.go`, `FieldError`, type constants, constructors
+  `BadRequest` … `InternalServer`, `Validation`. Structured recovery guidance: `WithNextAction(action, seconds)`
+  sets the `next_action`/`retry_after_seconds` extension members (`NextActionRetry`/`Wait`/`Reauthenticate`/
+  `ContactSupport`); `TooManyRequestsAfter(detail, seconds)` is the rate-limiter shorthand. Both fields are omitted
+  unless set, so every existing consumer's bodies are byte-identical until it opts in.
 - `ws` — WebSocket registry fanned out via Valkey Pub/Sub. `Registry` iface `ws/registry.go:22`,
   `Conn` `:17`; `RedisRegistry` `ws/redis.go:28` (`NewRedisRegistry` `:42`, `Start` `:72`,
   `Broadcast` `:97`, `listen` `:115` auto-resubscribe), `MemoryRegistry` `ws/memory.go:11` (single-instance).
