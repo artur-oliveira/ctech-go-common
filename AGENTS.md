@@ -30,8 +30,18 @@ directly — that path is the backing repo and may move.
   items alongside a `LastEvaluatedKey`; callers must treat an absent cursor, not a short page, as
   end-of-list.
   `TransactWrite` `:433` — **requires the `dynamodb:TransactWriteItems` IAM permission**.
-  `AtomicIncrement` `:441`, `Decode[T]` `:474`, `Encode` `:483`, `IsConditionFailed` `:518`
-  (maps `TransactionCanceledException` too). `MarshalMapOmitNull` `dynamo/marshal.go:33`.
+  `AtomicIncrement` `:441`, `Decode[T]` `:474`, `Encode` `:483`. `MarshalMapOmitNull` `dynamo/marshal.go:33`.
+  **Transaction failures are classified by cancellation reason, not by "it was cancelled"**:
+  `IsConditionFailed` (single-item `ConditionalCheckFailedException`, or a `TransactionCanceledException`
+  carrying a `ConditionalCheckFailed` reason) is the only one that is a verdict about the caller's own
+  condition; `IsTransactionConflict` (a concurrent transaction on the same item) and
+  `IsTransactionThrottled` (`ThrottlingError`/`ProvisionedThroughputExceeded`) mean nothing was written
+  and the same write should be retried — the AWS SDK retries neither. Until 2026-09-17
+  `IsConditionFailed` answered true for *any* cancelled transaction, so a conflict impersonated a lost
+  optimistic-concurrency race; `ctech-poker` builds its table-commit recovery on that distinction and
+  froze a hand mid-runout because of it (its
+  `docs/specs/2026-09-17-frozen-table-runout-and-sitout-fold.md`). An unclassifiable cancellation now
+  answers false for all three rather than defaulting to "condition failed".
 - `cache` — `Backend` interface `cache/cache.go:7` (Get/Set/Delete/DeletePrefix/Ping). Valkey impl
   `RedisBackend` `cache/redis.go:13` (`NewRedisBackend` `:17`, `DeletePrefix` `:62` escapes glob metachars); in-memory
   impl `MemoryBackend` `cache/memory.go:17` (single-instance only).

@@ -792,10 +792,95 @@ func isTransactionCanceled(err error) bool {
 	return strings.Contains(err.Error(), "TransactionCanceledException")
 }
 
+// DynamoDB reports one cancellation reason per transaction item inside a
+// TransactionCanceledException ("None" for the items that were fine). Only
+// the first tells the caller their own condition was the problem; the rest
+// are transient and retryable, and conflating them is a correctness bug for
+// any caller that treats "condition failed" as a verdict — see
+// IsTransactionConflict.
+const (
+	reasonConditionalCheckFailed = "ConditionalCheckFailed"
+	reasonTransactionConflict    = "TransactionConflict"
+	reasonThrottlingError        = "ThrottlingError"
+	reasonThroughputExceeded     = "ProvisionedThroughputExceeded"
+)
+
+// transactionCanceledFor reports whether err is a cancelled transaction
+// carrying at least one of the given cancellation reason codes.
+//
+// The typed exception is authoritative when it decoded its reasons. When it
+// did not — a reason-less cancellation, or an error that crossed a boundary
+// preserving only its message — the codes are matched against the message
+// instead, since DynamoDB names them there too ("... cancellation reasons
+// ... [ConditionalCheckFailed, None]"). An unrecognised cancellation
+// therefore answers false for every specific question rather than
+// impersonating a condition failure.
+func transactionCanceledFor(err error, codes ...string) bool {
+	if err == nil {
+		return false
+	}
+	if exception, ok := errors.AsType[*types.TransactionCanceledException](err); ok {
+		if len(exception.CancellationReasons) > 0 {
+			for _, reason := range exception.CancellationReasons {
+				if reason.Code == nil {
+					continue
+				}
+				for _, code := range codes {
+					if *reason.Code == code {
+						return true
+					}
+				}
+			}
+			return false
+		}
+	} else if !isTransactionCanceled(err) {
+		return false
+	}
+	message := err.Error()
+	for _, code := range codes {
+		if strings.Contains(message, code) {
+			return true
+		}
+	}
+	return false
+}
+
 // IsConditionFailed reports whether err represents a DynamoDB conditional
 // check failure, either from a single-item call or from within a
-// TransactWrite (TransactionCanceledException wrapping a condition failure).
-// Exported for the services layer to translate into problem.Conflict.
+// TransactWrite (TransactionCanceledException carrying a
+// ConditionalCheckFailed reason). Exported for the services layer to
+// translate into problem.Conflict.
+//
+// It deliberately does NOT cover every cancelled transaction. Until
+// 2026-09-17 it answered true for any TransactionCanceledException, so a
+// TransactionConflict — a *concurrent* transaction on the same item, which
+// says nothing about the caller's own condition — was reported as a lost
+// optimistic-concurrency race. ctech-poker's table commits build their whole
+// recovery on that distinction: a version conflict means "someone else
+// already advanced this table, reconcile and move on", so a conflicted
+// all-in runout step was silently treated as already dealt and a hand froze
+// mid-runout with chips committed (ctech-poker
+// docs/specs/2026-09-17-frozen-table-runout-and-sitout-fold.md). Throttling
+// reasons had the same shape. Use IsTransactionConflict/IsTransactionThrottled
+// for those, and retry rather than reconcile.
 func IsConditionFailed(err error) bool {
-	return isConditionFailed(err) || isTransactionCanceled(err)
+	return isConditionFailed(err) || transactionCanceledFor(err, reasonConditionalCheckFailed)
+}
+
+// IsTransactionConflict reports whether a TransactWrite was cancelled because
+// another transaction was operating on one of its items. Nothing was written
+// and no condition was evaluated, so the correct response is to retry the
+// same write — the AWS SDK does not retry it (TransactionConflict is in
+// neither DefaultRetryableErrorCodes nor DefaultThrottleErrorCodes), and
+// treating it as a condition failure hides a write that never happened.
+func IsTransactionConflict(err error) bool {
+	return transactionCanceledFor(err, reasonTransactionConflict)
+}
+
+// IsTransactionThrottled reports whether a TransactWrite was cancelled by
+// throughput limits (ThrottlingError or ProvisionedThroughputExceeded).
+// Retryable with backoff, for the same reason as IsTransactionConflict: the
+// caller's own condition was never the problem.
+func IsTransactionThrottled(err error) bool {
+	return transactionCanceledFor(err, reasonThrottlingError, reasonThroughputExceeded)
 }

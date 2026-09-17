@@ -24,3 +24,19 @@ Before making a decision here, ask: "does this apply to the whole family, not ju
 - New reusable code (not service-specific business logic) — default to proposing it for a shared package (ctech-cdk, ctech-go-common, ctech-ui, ctech-ws-client) instead of duplicating it here.
 
 A fix scoped to only this repo, for a problem that is actually systemic across the family, is an incomplete fix. This applies to AI agents working in single-repo sessions too.
+
+## Error-semantics rules (cross-repo contract)
+
+- **A cancelled DynamoDB transaction is not a verdict — classify it by cancellation reason.**
+  `dynamo.IsConditionFailed` covers only a genuine conditional-check failure (single-item
+  `ConditionalCheckFailedException`, or a `TransactionCanceledException` whose reasons include
+  `ConditionalCheckFailed`). `dynamo.IsTransactionConflict` (another transaction was operating on one of the
+  items) and `dynamo.IsTransactionThrottled` (`ThrottlingError`/`ProvisionedThroughputExceeded`) mean the write
+  never happened and no condition was evaluated: retry it, do not reconcile. Until 2026-09-17
+  `IsConditionFailed` returned true for *any* `TransactionCanceledException`, and every consumer that treats
+  "condition failed" as "someone else won the race" inherited the bug — `ctech-poker`'s
+  `tablestore.resolveCommitErr` mapped a plain transaction conflict to its `ErrVersionConflict`, whose handlers
+  reconcile and move on, so an all-in runout step that was never written looked like a street a sibling had
+  already dealt and the hand froze mid-runout with chips committed (`ctech-poker`
+  `docs/specs/2026-09-17-frozen-table-runout-and-sitout-fold.md`). When adding a new error predicate here, ask
+  what the caller will *do* with a true answer: a retryable failure and a lost race must never share one.
