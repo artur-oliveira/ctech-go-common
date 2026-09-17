@@ -1,9 +1,12 @@
 package dynamo
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
@@ -238,5 +241,116 @@ func TestBuildFilterExpr(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A cancelled transaction says nothing by itself: every consumer that treats
+// IsConditionFailed as a verdict ("my condition lost, reconcile and move on")
+// needs the ConditionalCheckFailed reason specifically. Reporting a
+// TransactionConflict or a throttle as a condition failure is what let
+// ctech-poker swallow an all-in runout step that was never written and freeze
+// the hand — see IsConditionFailed's doc comment.
+func canceledWithReasons(codes ...string) error {
+	reasons := make([]types.CancellationReason, 0, len(codes))
+	for _, code := range codes {
+		reasons = append(reasons, types.CancellationReason{Code: aws.String(code)})
+	}
+	return &types.TransactionCanceledException{
+		Message:             aws.String("Transaction cancelled, please refer cancellation reasons for specific reasons"),
+		CancellationReasons: reasons,
+	}
+}
+
+func TestTransactionCancellationReasonsAreNotConflated(t *testing.T) {
+	cases := []struct {
+		name                            string
+		err                             error
+		conditionFailed, conflict, slow bool
+	}{
+		{
+			name:            "condition failed on one item",
+			err:             canceledWithReasons("None", "ConditionalCheckFailed"),
+			conditionFailed: true,
+		},
+		{
+			name:     "concurrent transaction on the same item",
+			err:      canceledWithReasons("TransactionConflict", "None"),
+			conflict: true,
+		},
+		{
+			name: "throttled",
+			err:  canceledWithReasons("None", "ThrottlingError"),
+			slow: true,
+		},
+		{
+			name: "throughput exceeded",
+			err:  canceledWithReasons("ProvisionedThroughputExceeded"),
+			slow: true,
+		},
+		{
+			name: "validation error is nobody's condition",
+			err:  canceledWithReasons("ValidationError"),
+		},
+		{
+			name:            "single-item conditional check",
+			err:             &types.ConditionalCheckFailedException{Message: aws.String("The conditional request failed")},
+			conditionFailed: true,
+		},
+		{
+			name:            "wrapped condition failure",
+			err:             fmt.Errorf("commit: %w", canceledWithReasons("ConditionalCheckFailed")),
+			conditionFailed: true,
+		},
+		{
+			name:     "wrapped conflict",
+			err:      fmt.Errorf("commit: %w", canceledWithReasons("TransactionConflict")),
+			conflict: true,
+		},
+		{
+			name: "nil",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsConditionFailed(tc.err); got != tc.conditionFailed {
+				t.Errorf("IsConditionFailed = %v, want %v", got, tc.conditionFailed)
+			}
+			if got := IsTransactionConflict(tc.err); got != tc.conflict {
+				t.Errorf("IsTransactionConflict = %v, want %v", got, tc.conflict)
+			}
+			if got := IsTransactionThrottled(tc.err); got != tc.slow {
+				t.Errorf("IsTransactionThrottled = %v, want %v", got, tc.slow)
+			}
+		})
+	}
+}
+
+// An exception whose reasons never decoded (or one flattened to a string by a
+// transport that dropped the typed error) must still be classifiable: the
+// reason codes appear in DynamoDB's own message.
+func TestCancellationReasonsFallBackToTheMessage(t *testing.T) {
+	stringified := errors.New("operation error DynamoDB: TransactWriteItems, " +
+		"TransactionCanceledException: Transaction cancelled, please refer cancellation " +
+		"reasons for specific reasons [TransactionConflict, None]")
+	if IsConditionFailed(stringified) {
+		t.Error("a stringified conflict must not read as a condition failure")
+	}
+	if !IsTransactionConflict(stringified) {
+		t.Error("expected the conflict reason to be recognised from the message")
+	}
+
+	reasonless := &types.TransactionCanceledException{
+		Message: aws.String("Transaction cancelled ... [ConditionalCheckFailed, None]"),
+	}
+	if !IsConditionFailed(reasonless) {
+		t.Error("expected a reason-less exception to fall back to its message")
+	}
+	if IsTransactionConflict(reasonless) {
+		t.Error("a condition failure must not read as a conflict")
+	}
+
+	opaque := &types.TransactionCanceledException{Message: aws.String("Transaction cancelled")}
+	if IsConditionFailed(opaque) || IsTransactionConflict(opaque) || IsTransactionThrottled(opaque) {
+		t.Error("an unclassifiable cancellation must not impersonate any specific reason")
 	}
 }

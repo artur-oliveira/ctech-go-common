@@ -114,7 +114,7 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 
 | Package        | Key symbols (file:line)                                                                                                                                                                                 |
 |----------------|---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------|
-| `dynamo`       | `Base` `dynamo/base.go:25`, `TransactWrite` `:433` (needs `dynamodb:TransactWriteItems`), `Query` `:330`, `UpsertAttrs` `:176`, `IsConditionFailed` `:518`, `MarshalMapOmitNull` `dynamo/marshal.go:33` |
+| `dynamo`       | `Base` `dynamo/base.go:25`, `TransactWrite` `:433` (needs `dynamodb:TransactWriteItems`), `Query` `:330`, `UpsertAttrs` `:176`, `IsConditionFailed` / `IsTransactionConflict` / `IsTransactionThrottled` `dynamo/base.go:846+`, `MarshalMapOmitNull` `dynamo/marshal.go:33` |
 | `cache`        | `Backend` `cache/cache.go:7`, `RedisBackend` `cache/redis.go:13`, `MemoryBackend` `cache/memory.go:17`                                                                                                  |
 | `lock`         | `Locker` `lock/lock.go:45`, `AcquireOrdered` `:103` (deadlock-free), `StartHeartbeat` `:155`                                                                                                            |
 | `jwtverify`    | `Verifier` `jwtverify/verifier.go:72`, `VerifyClaims` `:101`, `Claims` `:48`                                                                                                                            |
