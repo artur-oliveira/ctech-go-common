@@ -3,13 +3,14 @@ package ws
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"log/slog"
 	"sync"
 )
 
 const (
 	closeMessageType = 8
-	goingAwayCode   = 1001
+	goingAwayCode    = 1001
 )
 
 var goingAwayPayload = func() []byte {
@@ -22,8 +23,8 @@ var goingAwayPayload = func() []byte {
 // MemoryRegistry is a single-instance connection registry. Use RedisRegistry
 // to fan out across multiple API instances.
 type MemoryRegistry struct {
-	mu    sync.Mutex
-	conns map[string]map[string]Conn // key → connID → conn
+	mu       sync.Mutex
+	conns    map[string]map[string]Conn // key → connID → conn
 	draining bool
 }
 
@@ -108,4 +109,20 @@ func (m *MemoryRegistry) Broadcast(_ context.Context, key string, payload []byte
 			m.Unregister(key, id)
 		}
 	}
+}
+
+// Publish accepts a payload for local fan-out. Disconnected clients recover via
+// the consumer's snapshot protocol; individual socket failures are not retried.
+func (m *MemoryRegistry) Publish(ctx context.Context, key string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	draining := m.draining
+	m.mu.Unlock()
+	if draining {
+		return errors.New("ws registry draining")
+	}
+	m.Broadcast(ctx, key, payload)
+	return nil
 }

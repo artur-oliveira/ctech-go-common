@@ -26,3 +26,10 @@ type Registry interface {
 	Unregister(key, connID string)
 	Broadcast(ctx context.Context, key string, payload []byte)
 }
+
+// Publisher acknowledges acceptance by the fan-out transport, not delivery to
+// every browser. Consumers retain durable outboxes and clients recover snapshots.
+// This optional interface leaves the existing Registry contract unchanged.
+type Publisher interface {
+	Publish(context.Context, string, []byte) error
+}

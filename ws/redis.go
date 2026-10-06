@@ -96,8 +96,7 @@ func (r *RedisRegistry) Unregister(key, connID string) {
 
 // Broadcast publishes to Valkey; the listener delivers to local connections.
 func (r *RedisRegistry) Broadcast(ctx context.Context, key string, payload []byte) {
-	ch := channelPrefix + key
-	err := r.client.Do(ctx, r.client.B().Publish().Channel(ch).Message(string(payload)).Build()).Error()
+	err := r.Publish(ctx, key, payload)
 	if err != nil {
 		slog.Error("valkey publish failed, falling back to local", "key", key, "err", err)
 		r.local.Broadcast(ctx, key, payload)
@@ -140,4 +139,13 @@ func (r *RedisRegistry) listen(ctx context.Context) {
 		time.Sleep(retryDelay)
 		retryDelay = min(retryDelay*2, 60*time.Second)
 	}
+}
+
+// Publish returns the broker's publish result. It never falls back to local
+// delivery: an outbox must remain pending when the shared transport fails.
+func (r *RedisRegistry) Publish(ctx context.Context, key string, payload []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return r.client.Do(ctx, r.client.B().Publish().Channel(channelPrefix+key).Message(string(payload)).Build()).Error()
 }

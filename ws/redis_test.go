@@ -2,6 +2,7 @@ package ws
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,6 +18,7 @@ import (
 // case is an internal valkey.Client behavior (e.g. connection recycling),
 // not something a fake server can trigger over the wire.
 type fakeValkeyPubSub struct {
+	publishError error
 	receiveCalls int32
 	resubscribed chan struct{}
 }
@@ -24,7 +26,7 @@ type fakeValkeyPubSub struct {
 func (f *fakeValkeyPubSub) B() valkey.Builder { return valkey.Builder{} }
 
 func (f *fakeValkeyPubSub) Do(_ context.Context, _ valkey.Completed) valkey.ValkeyResult {
-	return valkey.ValkeyResult{}
+	return valkey.NewErrorResult(f.publishError)
 }
 
 // Receive simulates valkey.Client.Receive's documented case 1: it returns nil
@@ -60,5 +62,28 @@ func TestRedisRegistryListenResubscribesAfterCleanReceiveReturn(t *testing.T) {
 
 	if calls := atomic.LoadInt32(&fc.receiveCalls); calls < 2 {
 		t.Fatalf("expected at least 2 Receive() calls, got %d", calls)
+	}
+}
+
+func TestPublishFailureDoesNotAcknowledgeLocalFallback(t *testing.T) {
+	failure := errors.New("broker offline")
+	r := &RedisRegistry{client: &fakeValkeyPubSub{publishError: failure}, local: NewMemoryRegistry()}
+	conn := &fakeConn{}
+	r.Register("lot", "viewer", conn)
+	if err := r.Publish(context.Background(), "lot", []byte("event")); !errors.Is(err, failure) {
+		t.Fatalf("Publish error = %v", err)
+	}
+	if len(conn.written) != 0 {
+		t.Fatal("Publish performed local fallback")
+	}
+	// Legacy Broadcast preserves the existing fallback behavior.
+	r.Broadcast(context.Background(), "lot", []byte("event"))
+	if len(conn.written) != 1 {
+		t.Fatal("legacy fallback changed")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if !errors.Is(r.Publish(ctx, "lot", nil), context.Canceled) {
+		t.Fatal("cancellation ignored")
 	}
 }
