@@ -247,3 +247,18 @@ func TestConsumer_Run_ReceivesOneMessageAtATime(t *testing.T) {
 		}
 	}
 }
+
+func TestConsumer_StaleEraseFromOtherRequest_NotAckedDone(t *testing.T) {
+	// The record is active because of a different, newer request: nothing proves
+	// this erase was ever purged, so it must not be reported done.
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, a := newTestConsumer(t, "wallet", p)
+	_, _ = store.Apply(ctx, SubKey("user-1"), msgAt(TypeUnlocked, "r2", time.Hour))
+	if err := c.handle(ctx, body(t, msgAt(TypeErase, "r1", 0))); err == nil {
+		t.Fatal("unprovable stale erase must be left for redelivery/DLQ, not acked")
+	}
+	if p.calls != 0 || len(a.received()) != 0 {
+		t.Fatalf("purge calls=%d acks=%d, want 0/0", p.calls, len(a.received()))
+	}
+}

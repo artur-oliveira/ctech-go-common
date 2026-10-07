@@ -191,6 +191,7 @@ func (s *Store) Clear(ctx context.Context, sub string) error {
 	next := Record{
 		PK:        key,
 		State:     StateActive,
+		RequestID: cur.RequestID, // proves which erase was already done
 		SeqNS:     max(cur.SeqNS, now.UnixNano()),
 		UpdatedAt: now.UTC().Format(time.RFC3339),
 		TTL:       now.Add(activeMemory).Unix(),

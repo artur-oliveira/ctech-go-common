@@ -102,9 +102,13 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 		return err
 	}
 	if rec.State == StateActive {
-		// Stale erase: the user came back after this request was already
-		// purged. Purging now would wipe their new data. The work was done
-		// before, so ack it done (the first ack may have been lost).
+		// Stale erase. If the user came back (Clear) after this very request
+		// was purged, the work was done: ack it done (the first ack may have
+		// been lost) without purging their new data. Anything else is
+		// unexplained: leave it for redelivery and the DLQ, never claim done.
+		if rec.RequestID != m.RequestID {
+			return fmt.Errorf("erasure: erase %s is older than active record of request %s", m.RequestID, rec.RequestID)
+		}
 		return c.acks.Send(ctx, Ack{RequestID: m.RequestID, Service: c.service, Result: ResultDone, At: c.now().UTC()})
 	}
 	ack, err := c.purge(ctx, m)
