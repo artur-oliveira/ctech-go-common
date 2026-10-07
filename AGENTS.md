@@ -53,6 +53,12 @@ directly — that path is the backing repo and may move.
   `NewVerifier` `:82`, `Ping` `:89` (health check), `VerifyClaims` `:101`, `Claims` `:48`
   (`Scopes` `:58`, `HasScope` `:61`). JWKS cached under `ctech:jwks` TTL 1h `:27-28`; unknown-kid refresh throttled to
   60s `:32`, `:150`.
+  Revocation: `WithRevocation`, `Revoke`, `Unrevoke`, `RevocationTTL`, `ErrTokenRevoked`, `ErrRevocationUnavailable`,
+  `VerifyClaimsStrict` in `jwtverify/revocation.go` / `jwtverify/verifier.go` (entries in Valkey DB 0).
+- `erasure` — LGPD account-deletion participant contract. `Message`/`Encode`/`Decode` `erasure/message.go`;
+  `Store` (`Apply`, `Blocked`, `OrgErased`, `Clear`) over `{prefix}_erasure_state` `erasure/state.go`
+  (pure transition `apply`: issued_at ordering, erased terminal); `Consumer` `erasure/consumer.go`
+  (deletes a message only after purge + tombstone + ack); `AckClient` `erasure/ack.go`.
 - `oauth2client` — cached `client_credentials` token fetcher. `TokenManager` `oauth2client/client.go:21`;
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
 - `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error

@@ -22,6 +22,7 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `alerts`       | Operator alerts published to an SNS topic — the cheap replacement for per-metric CloudWatch alarms |
 | `drain`        | `Tracker` coordinates graceful shutdown of long-lived connections (e.g. websockets): register/unregister a per-connection `CloseFunc`, `Drain` asks every live connection to reconnect elsewhere. Callers wire it to their own SIGTERM handler |
 | `ratelimit`    | Transport-agnostic, Valkey-backed rate limiter core (throughput-guard `Take` and brute-force-guard `CheckFailures`/`RecordFailure` shapes); each API wraps a `Limiter` in its own thin HTTP middleware |
+| `erasure`      | Participant side of the LGPD account-deletion saga: message contract (`Message`, `Encode`/`Decode`), `{prefix}_erasure_state` lock/tombstone `Store`, SQS `Consumer`, `AckClient`, eligibility/blocker types. Orchestration lives in ctech-account |
 
 ## Import path
 
@@ -66,6 +67,33 @@ that always knows (a rate limiter and its own window).
 Internal causes can be attached to a shared RFC 7807 problem with `Problem.WithCause`. `cause` is unexported and is
 never serialized; Fiber-facing consumer wrappers log it before writing the safe public body. Logs must not contain
 credentials, tokens, cookies, request bodies, email addresses, tax identifiers or other unnecessary PII.
+
+## Account erasure (LGPD deletion)
+
+Contract: `ctech-account/docs/specs/2026-10-06-account-deletion-saga-protocol.md`.
+
+Each participant service (wallet, dfe, billing, poker):
+
+1. Creates a `{prefix}_erasure_state` DynamoDB table (partition key `pk` String, TTL attribute `ttl`)
+   and an SQS queue + DLQ subscribed to ctech-account's `{env}-account-user-erasure` SNS topic
+   (filter policy on `services`, scope `MessageBody`; raw delivery recommended, the envelope is also accepted).
+   Queue visibility timeout ≥ 2× the slowest purge.
+2. Builds `erasure.NewStore(dynamoClient, tablePrefix, retention)` and calls `store.Blocked(ctx, sub)` on
+   every user write path (refuse when true), and `store.OrgErased` on org-scoped async work.
+3. Implements a `PurgeFunc` (idempotent, resumable, re-checks eligibility, returns `done`/`blocked`) and
+   runs `erasure.NewConsumer(sqsClient, queueURL, "<service>", store, purge, erasure.NewAckClient(...)).Run(ctx)`
+   in a background goroutine. The ack client uses an `oauth2client.TokenManager` with scope `account:erasure:ack`.
+4. Serves `GET /internal/erasure/eligibility/{sub}` returning `erasure.NewEligibility(blockers...)`.
+
+Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
+
+### JWT revocation
+
+`Verifier.WithRevocation(backend)` rejects tokens of a locked user (`ErrTokenRevoked`). ctech-account writes the
+entries with `jwtverify.Revoke` / `jwtverify.Unrevoke`. The entries live in **Valkey DB 0** (the shared base URL
+`/ctech/{env}/valkey/url`, no DB suffix): services whose main cache uses another logical DB (wallet DB 2,
+billing DB 3) must pass a second `cache.RedisBackend` built on the base URL. `VerifyClaims` fails open if Valkey is
+unreachable; money-moving routes use `VerifyClaimsStrict`, which fails closed with `ErrRevocationUnavailable`.
 
 ## Development
 
