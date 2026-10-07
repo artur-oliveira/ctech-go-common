@@ -60,6 +60,7 @@ type Claims struct {
 	AZP       string // OAuth client_id
 	KYCLevel  string // "" | "basic" | "verified" (empty when the service/scope doesn't carry it)
 	LastMFAAt int64  // unix seconds of the last MFA proof; 0 if absent
+	IssuedAt  int64  // iat, unix seconds; 0 if absent
 }
 
 // Scopes splits the space-joined Scope claim into individual scope strings.
@@ -83,6 +84,8 @@ type Verifier struct {
 	issuer   string // expected iss claim; empty disables the issuer check
 	cache    cache.Backend
 
+	revocation cache.Backend // nil disables the revocation check; see WithRevocation
+
 	mu          sync.Mutex
 	lastRefetch time.Time
 }
@@ -105,8 +108,20 @@ func (v *Verifier) Ping(ctx context.Context) error {
 	return nil
 }
 
-// VerifyClaims validates a raw JWT string and returns its parsed claims.
+// VerifyClaims validates a raw JWT string and returns its parsed claims. When a
+// revocation backend is configured and unreachable, the check is skipped (fail
+// open): authentication must not depend on cache availability.
 func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, error) {
+	return v.verify(ctx, tokenStr, false)
+}
+
+// VerifyClaimsStrict is VerifyClaims for money-moving routes: an unreachable
+// revocation backend rejects the token with ErrRevocationUnavailable.
+func (v *Verifier) VerifyClaimsStrict(ctx context.Context, tokenStr string) (*Claims, error) {
+	return v.verify(ctx, tokenStr, true)
+}
+
+func (v *Verifier) verify(ctx context.Context, tokenStr string, strict bool) (*Claims, error) {
 	kid, err := tokenKID(tokenStr)
 	if err != nil {
 		return nil, err
@@ -152,6 +167,12 @@ func (v *Verifier) VerifyClaims(ctx context.Context, tokenStr string) (*Claims, 
 	cl.KYCLevel, _ = mc["kyc_level"].(string)
 	if lm, ok := mc["last_mfa_at"].(float64); ok {
 		cl.LastMFAAt = int64(lm)
+	}
+	if iat, ok := mc["iat"].(float64); ok {
+		cl.IssuedAt = int64(iat)
+	}
+	if err := v.checkRevoked(ctx, cl, strict); err != nil {
+		return nil, err
 	}
 	return cl, nil
 }
