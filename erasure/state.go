@@ -48,7 +48,6 @@ var ErrConcurrentUpdate = errors.New("erasure: state changed concurrently, retri
 type dynamoAPI interface {
 	GetItem(ctx context.Context, in *dynamodb.GetItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error)
 	PutItem(ctx context.Context, in *dynamodb.PutItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.PutItemOutput, error)
-	DeleteItem(ctx context.Context, in *dynamodb.DeleteItemInput, opts ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error)
 }
 
 type Store struct {
@@ -78,6 +77,11 @@ func apply(cur *Record, key string, m Message, now time.Time, erasedTTL time.Dur
 	next := Record{PK: key, RequestID: m.RequestID, SeqNS: max(prev.SeqNS, seq), UpdatedAt: now.UTC().Format(time.RFC3339)}
 	switch m.Type {
 	case TypeErase:
+		// An active record newer than the erase means the user came back
+		// (Clear) or the erase is from a request superseded by an unlock: stale.
+		if cur != nil && prev.State == StateActive && seq <= prev.SeqNS {
+			return prev, false
+		}
 		next.State = StateErased
 		if erasedTTL > 0 {
 			next.TTL = now.Add(erasedTTL).Unix()
@@ -172,17 +176,28 @@ func (s *Store) OrgErased(ctx context.Context, orgID string) (bool, error) {
 	return r != nil && r.State == StateErased, err
 }
 
-// Clear removes sub's tombstone when a user who left this service (scope
-// service) consents to it again. A record that is not erased is left alone.
+// Clear reactivates sub when a user who left this service (scope service)
+// consents to it again. The record is not deleted: it stays active with a
+// sequence newer than the old erase, so a late duplicate of that erase is
+// recognised as stale instead of wiping the returning user's new data.
+// A record that is not erased is left alone.
 func (s *Store) Clear(ctx context.Context, sub string) error {
-	_, err := s.db.DeleteItem(ctx, &dynamodb.DeleteItemInput{
-		TableName:                 aws.String(s.table),
-		Key:                       map[string]types.AttributeValue{"pk": &types.AttributeValueMemberS{Value: SubKey(sub)}},
-		ConditionExpression:       aws.String("erasure_state = :erased"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":erased": &types.AttributeValueMemberS{Value: string(StateErased)}},
-	})
+	key := SubKey(sub)
+	cur, err := s.Get(ctx, key)
+	if err != nil || cur == nil || cur.State != StateErased {
+		return err
+	}
+	now := s.now()
+	next := Record{
+		PK:        key,
+		State:     StateActive,
+		SeqNS:     max(cur.SeqNS, now.UnixNano()),
+		UpdatedAt: now.UTC().Format(time.RFC3339),
+		TTL:       now.Add(activeMemory).Unix(),
+	}
+	err = s.put(ctx, next, cur)
 	if dynamo.IsConditionFailed(err) {
-		return nil
+		return ErrConcurrentUpdate
 	}
 	return err
 }

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
@@ -193,5 +194,56 @@ func TestConsumer_Run_DeletesOnlyHandledMessages(t *testing.T) {
 	}
 	if len(f.deleted) != 1 || f.deleted[0] != "rh-good" {
 		t.Fatalf("deleted = %v, want only rh-good (poison stays for the DLQ)", f.deleted)
+	}
+}
+
+func TestConsumer_StaleEraseAfterClear_DoesNotPurge(t *testing.T) {
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, a := newTestConsumer(t, "wallet", p)
+	store.now = func() time.Time { return t0.Add(time.Hour) }
+	b := body(t, msgAt(TypeErase, "r1", 0))
+	if err := c.handle(ctx, b); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if err := store.Clear(ctx, "user-1"); err != nil { // user re-consented
+		t.Fatalf("Clear: %v", err)
+	}
+	if err := c.handle(ctx, b); err != nil { // late duplicate
+		t.Fatalf("late erase: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("purge calls = %d, want 1: a stale erase must not wipe the returning user's data", p.calls)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); blocked {
+		t.Fatal("returning user must not be locked by a stale erase")
+	}
+	if acks := a.received(); len(acks) != 2 || acks[1].Result != ResultDone {
+		t.Fatalf("stale erase must still be acked done (work was done before): %+v", acks)
+	}
+}
+
+type countingSQS struct {
+	fakeSQS
+	maxPerReceive []int32
+}
+
+func (f *countingSQS) ReceiveMessage(ctx context.Context, in *sqs.ReceiveMessageInput, opts ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+	f.maxPerReceive = append(f.maxPerReceive, in.MaxNumberOfMessages)
+	return f.fakeSQS.ReceiveMessage(ctx, in, opts...)
+}
+
+func TestConsumer_Run_ReceivesOneMessageAtATime(t *testing.T) {
+	// Every received message's visibility clock starts at receive; with a batch,
+	// later messages reappear on other replicas while earlier ones still purge.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &countingSQS{fakeSQS: fakeSQS{maxReceives: 1, cancel: cancel}}
+	c := NewConsumer(f, "queue", "wallet", NewStore(newFakeDynamo(), "test", 0), (&purgeRecorder{}).fn, newAckServer(t).client())
+	_ = c.Run(ctx)
+	for _, n := range f.maxPerReceive {
+		if n != 1 {
+			t.Fatalf("MaxNumberOfMessages = %d, want 1", n)
+		}
 	}
 }

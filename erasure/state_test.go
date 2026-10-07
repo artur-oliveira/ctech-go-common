@@ -76,21 +76,6 @@ func (f *fakeDynamo) PutItem(_ context.Context, in *dynamodb.PutItemInput, _ ...
 	return &dynamodb.PutItemOutput{}, nil
 }
 
-func (f *fakeDynamo) DeleteItem(_ context.Context, in *dynamodb.DeleteItemInput, _ ...func(*dynamodb.Options)) (*dynamodb.DeleteItemOutput, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	key := pkOf(in.Key)
-	cur, exists := f.items[key]
-	if cond := aws.ToString(in.ConditionExpression); cond != "erasure_state = :erased" {
-		return nil, fmt.Errorf("fakeDynamo: unsupported condition %q", cond)
-	}
-	if !exists || attrS(cur["erasure_state"]) != string(StateErased) {
-		return nil, condFailed()
-	}
-	delete(f.items, key)
-	return &dynamodb.DeleteItemOutput{}, nil
-}
-
 var t0 = time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC)
 
 func msgAt(typ Type, req string, offset time.Duration) Message {
@@ -216,5 +201,28 @@ func TestStore_OrgErasedAndClear(t *testing.T) {
 	}
 	if blocked, _ := s.Blocked(ctx, "gone"); blocked {
 		t.Fatal("cleared tombstone must not block a returning user")
+	}
+}
+
+func TestApply_EraseOlderThanActiveRecordIgnored(t *testing.T) {
+	// The user cleared a tombstone (or unlocked) after this erase was issued: it is stale.
+	r, _ := apply(nil, "SUB#u", msgAt(TypeUnlocked, "r2", time.Hour), t0, 0)
+	if r2, changed := apply(&r, "SUB#u", msgAt(TypeErase, "r1", 0), t0, 0); changed || r2.State != StateActive {
+		t.Fatalf("stale erase applied: %+v changed=%v", r2, changed)
+	}
+}
+
+func TestStore_ClearRemembersErase(t *testing.T) {
+	ctx := context.Background()
+	s := NewStore(newFakeDynamo(), "test", 0)
+	s.now = func() time.Time { return t0.Add(time.Hour) }
+	erase := msgAt(TypeErase, "r1", 0)
+	_, _ = s.Apply(ctx, SubKey("u"), erase)
+	if err := s.Clear(ctx, "u"); err != nil {
+		t.Fatalf("Clear: %v", err)
+	}
+	r, err := s.Apply(ctx, SubKey("u"), erase) // late duplicate of the erase already handled
+	if err != nil || r.State != StateActive {
+		t.Fatalf("late erase after Clear: %+v err=%v, want active", r, err)
 	}
 }

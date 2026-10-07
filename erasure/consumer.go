@@ -37,14 +37,16 @@ func NewConsumer(sqsClient sqsAPI, queueURL, service string, store *Store, purge
 // Run long-polls until ctx is cancelled. A message is deleted only after it was
 // fully handled; anything else is redelivered and, past the queue's
 // maxReceiveCount, lands in the DLQ.
-// ponytail: one message at a time, no visibility heartbeat. Set the queue's
-// visibility timeout to at least 2x the slowest purge; add a heartbeat if a
-// purge ever outgrows it.
+// One message per receive: each received message's visibility clock starts at
+// receive, so a batch would let later messages reappear on another replica
+// while earlier ones still purge.
+// ponytail: no visibility heartbeat. Set the queue's visibility timeout to at
+// least 2x the slowest purge; add a heartbeat if a purge ever outgrows it.
 func (c *Consumer) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		out, err := c.sqs.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.queueURL),
-			MaxNumberOfMessages: 10,
+			MaxNumberOfMessages: 1,
 			WaitTimeSeconds:     20,
 		})
 		if err != nil {
@@ -95,8 +97,15 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	// before the purge starts. A no-op if already locked or erased.
 	lock := m
 	lock.Type = TypeLocked
-	if _, err := c.store.Apply(ctx, key, lock); err != nil {
+	rec, err := c.store.Apply(ctx, key, lock)
+	if err != nil {
 		return err
+	}
+	if rec.State == StateActive {
+		// Stale erase: the user came back after this request was already
+		// purged. Purging now would wipe their new data. The work was done
+		// before, so ack it done (the first ack may have been lost).
+		return c.acks.Send(ctx, Ack{RequestID: m.RequestID, Service: c.service, Result: ResultDone, At: c.now().UTC()})
 	}
 	ack, err := c.purge(ctx, m)
 	if err != nil {
