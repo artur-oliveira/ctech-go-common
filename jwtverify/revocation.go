@@ -44,24 +44,33 @@ func (v *Verifier) WithRevocation(c cache.Backend) *Verifier {
 	return v
 }
 
-func (v *Verifier) checkRevoked(ctx context.Context, cl *Claims, strict bool) error {
-	if v.revocation == nil {
-		return nil
-	}
-	raw, ok, err := v.revocation.Get(ctx, revokedSubPrefix+cl.Sub)
+// CheckRevoked reports whether sub's token issued at iat is on the revocation
+// list. For services that verify tokens without a Verifier (ctech-account signs
+// and verifies its own). A backend failure is returned wrapped in
+// ErrRevocationUnavailable; the caller chooses to fail open or closed.
+func CheckRevoked(ctx context.Context, c cache.Backend, sub string, iat int64) error {
+	raw, ok, err := c.Get(ctx, revokedSubPrefix+sub)
 	if err != nil {
-		if strict {
-			return fmt.Errorf("%w: %v", ErrRevocationUnavailable, err)
-		}
-		slog.WarnContext(ctx, "jwtverify: revocation check skipped", "error", err)
-		return nil
+		return fmt.Errorf("%w: %v", ErrRevocationUnavailable, err)
 	}
 	if !ok {
 		return nil
 	}
 	cutoff, err := strconv.ParseInt(string(raw), 10, 64)
-	if err != nil || cl.IssuedAt <= cutoff {
+	if err != nil || iat <= cutoff {
 		return ErrTokenRevoked // an unparseable entry fails safe
 	}
 	return nil
+}
+
+func (v *Verifier) checkRevoked(ctx context.Context, cl *Claims, strict bool) error {
+	if v.revocation == nil {
+		return nil
+	}
+	err := CheckRevoked(ctx, v.revocation, cl.Sub, cl.IssuedAt)
+	if errors.Is(err, ErrRevocationUnavailable) && !strict {
+		slog.WarnContext(ctx, "jwtverify: revocation check skipped", "error", err)
+		return nil
+	}
+	return err
 }

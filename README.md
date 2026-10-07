@@ -94,6 +94,7 @@ entries with `jwtverify.Revoke` / `jwtverify.Unrevoke`. The entries live in **Va
 `/ctech/{env}/valkey/url`, no DB suffix): services whose main cache uses another logical DB (wallet DB 2,
 billing DB 3) must pass a second `cache.RedisBackend` built on the base URL. `VerifyClaims` fails open if Valkey is
 unreachable; money-moving routes use `VerifyClaimsStrict`, which fails closed with `ErrRevocationUnavailable`.
+Services that verify tokens themselves (ctech-account) call `jwtverify.CheckRevoked(ctx, backend, sub, iat)` directly.
 
 ## Development
 

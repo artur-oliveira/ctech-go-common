@@ -141,3 +141,23 @@ func TestRevocation_NotConfiguredSkipsCheck(t *testing.T) {
 		t.Fatalf("strict verify without revocation backend: %v", err)
 	}
 }
+
+func TestCheckRevoked(t *testing.T) {
+	ctx := context.Background()
+	rev := cache.NewMemoryBackend(16)
+	now := time.Now()
+	_ = jwtverify.Revoke(ctx, rev, "user-1", now, jwtverify.RevocationTTL)
+
+	if err := jwtverify.CheckRevoked(ctx, rev, "user-1", now.Add(-time.Minute).Unix()); !errors.Is(err, jwtverify.ErrTokenRevoked) {
+		t.Fatalf("before cutoff: err = %v, want ErrTokenRevoked", err)
+	}
+	if err := jwtverify.CheckRevoked(ctx, rev, "user-1", now.Add(time.Minute).Unix()); err != nil {
+		t.Fatalf("after cutoff: err = %v, want nil", err)
+	}
+	if err := jwtverify.CheckRevoked(ctx, rev, "user-2", 0); err != nil {
+		t.Fatalf("other sub: err = %v, want nil", err)
+	}
+	if err := jwtverify.CheckRevoked(ctx, downBackend{}, "user-1", now.Unix()); !errors.Is(err, jwtverify.ErrRevocationUnavailable) {
+		t.Fatalf("backend down: err = %v, want ErrRevocationUnavailable", err)
+	}
+}
