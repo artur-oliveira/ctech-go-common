@@ -33,8 +33,8 @@ const defaultCapacitySampleRate = 0.05
 type CapacityRecorder func(table, operation string, capacityUnits float64)
 
 var (
-	capacityMu       sync.RWMutex
-	capacityRecorder CapacityRecorder
+	capacityMu         sync.RWMutex
+	capacityRecorder   CapacityRecorder
 	capacitySampleRate = defaultCapacitySampleRate
 )
 
