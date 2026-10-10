@@ -16,6 +16,7 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `awsconfig`    | AWS SDK v2 config load + DynamoDB client bootstrap (with local-endpoint override)               |
 | `ws`           | WebSocket connection registry, fanned out across instances via Valkey Pub/Sub                   |
 | `oauth2client` | Cached OAuth2 client_credentials token fetcher, shared across M2M callers                       |
+| `accountorgs`  | M2M client for ctech-account's organization facts: `Membership` (role + kind of a person in an organization) and `Organizations` (a person's workspaces), one token per scope, fail-closed (nil client, non-200, bad body are errors; "not a member" is `Membership{}`, nil). Replaces the copies in ctech-billing and ctech-dfe |
 | `lock`         | CAS acquire/renew/release lock (Valkey + in-memory), for advisory locks and long-held leases    |
 | `observability` | Structured slog helpers, Request-ID context and Fiber correlation/error-boundary integration   |
 | `email`        | SESv2 transport: one HTML send and a raw send for threaded mail. Templates stay in each service  |
