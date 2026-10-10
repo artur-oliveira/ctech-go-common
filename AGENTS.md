@@ -61,6 +61,15 @@ directly — that path is the backing repo and may move.
   (deletes a message only after purge + tombstone + ack); `AckClient` `erasure/ack.go`.
 - `oauth2client` — cached `client_credentials` token fetcher. `TokenManager` `oauth2client/client.go:21`;
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
+- `accountorgs` — M2M client for ctech-account's `GET /v1.0/internal/organizations/{org}/members/{user}`
+  (scope `MemberScope`) and `GET /v1.0/internal/users/{user}/organizations` (scope `ListScope`), each on its own
+  `oauth2client.TokenManager` so a missing list grant never breaks membership checks. `New` returns nil on an
+  incomplete `Config` and a nil `*Client` errors on every call (never permission). `Membership` returns a
+  `Membership{Member, Role, Kind}`; a refusal is the zero value with a nil error; every non-200 (403 = our
+  credential, 404 = route missing; ctech-account answers unknown orgs with 200 `member:false`) and every decode
+  failure is an error. `Organizations` returns `[]Organization` (`People`/`PendingInvitations` pointers, absent
+  = unknown); 8 KiB body cap per membership, 256 KiB per list. Kinds are raw; `IsOrganizationKind("")` is true.
+  Caching of answers stays in each service (its TTL is a product decision). Used by ctech-billing and ctech-dfe.
 - `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error
   boundary. No OpenTelemetry/exporter dependency; consumers own domain classification and safe attributes.
 - `problem` — RFC 7807/9457. `Problem` `problem/problem.go`, `FieldError`, type constants, constructors
