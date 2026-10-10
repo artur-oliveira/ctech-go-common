@@ -76,6 +76,10 @@ directly — that path is the backing repo and may move.
   ready to use); `Register` `:23` (rejects after drain starts), `Unregister` `:40`, `Draining` `:47`, `Drain` `:55`
   (idempotent; calls every registered `CloseFunc` and joins their errors). Callers own wiring this to their own
   SIGTERM/signal handler — this package has no signal-handling code itself.
+- `patch` — PATCH-body field `Optional[T]` (`patch/optional.go`): absent / null / value. An explicit JSON null
+  clears an optional field; absent keeps it. `Of`, `Null`, `UnmarshalJSON`, `Present`, `IsNull`, `Get`, `Ptr`.
+  Decode-only (no `MarshalJSON`: encodes as `{}`); duplicate key → last wins; decode into a fresh struct. Since
+  `v1.14.0`, extracted from ctech-billing `api/internal/patch` with identical API.
 - `ratelimit` — transport-agnostic, Valkey-backed rate limiter core (extracted from ctech-account's middleware).
   `Limiter` `ratelimit/ratelimit.go:41` (`Counter`, `Prefix`, `Max`, `Window`, `FailClosed`); `Take` `:59` (throughput
   guard, atomic incr+decide); brute-force guard via `CheckFailures`/`RecordFailure` in `ratelimit/counter.go`.

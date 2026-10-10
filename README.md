@@ -23,6 +23,7 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `drain`        | `Tracker` coordinates graceful shutdown of long-lived connections (e.g. websockets): register/unregister a per-connection `CloseFunc`, `Drain` asks every live connection to reconnect elsewhere. Callers wire it to their own SIGTERM handler |
 | `ratelimit`    | Transport-agnostic, Valkey-backed rate limiter core (throughput-guard `Take` and brute-force-guard `CheckFailures`/`RecordFailure` shapes); each API wraps a `Limiter` in its own thin HTTP middleware |
 | `erasure`      | Participant side of the LGPD account-deletion saga: message contract (`Message`, `Encode`/`Decode`), `{prefix}_erasure_state` lock/tombstone `Store`, SQS `Consumer`, `AckClient`, eligibility/blocker types. Orchestration lives in ctech-account |
+| `patch`        | `Optional[T]` for HTTP PATCH bodies: absent / null / value per field. An explicit JSON null clears an optional field; absent keeps it (see "Partial updates") |
 
 ## Import path
 
@@ -67,6 +68,33 @@ that always knows (a rate limiter and its own window).
 Internal causes can be attached to a shared RFC 7807 problem with `Problem.WithCause`. `cause` is unexported and is
 never serialized; Fiber-facing consumer wrappers log it before writing the safe public body. Logs must not contain
 credentials, tokens, cookies, request bodies, email addresses, tax identifiers or other unnecessary PII.
+
+## Partial updates (PATCH bodies)
+
+`patch.Optional[T]` is one field of a PATCH body. **An explicit JSON null clears an optional field; absent keeps it;
+a value replaces it.** A `*T` cannot express that, because absent and null both decode to nil.
+
+```go
+type updateBill struct {
+	Description patch.Optional[string] `json:"description"`
+	DueDate     patch.Optional[Date]   `json:"due_date"`
+}
+
+var body updateBill // always a fresh value per request
+if err := json.Unmarshal(raw, &body); err != nil { /* 400: reject the whole body */ }
+switch {
+case !body.Description.Present(): // absent: keep what is stored
+case body.Description.IsNull():   // null: clear (or 422 if the field is required)
+default:
+	v, _ := body.Description.Get() // a value: replace; "" and 0 are values, not absence
+}
+```
+
+API: `Of(v)`, `Null[T]()`, `Present`, `IsNull`, `Get` (value, ok), `Ptr` (copy, nil when absent or null),
+`UnmarshalJSON`. The zero value is absent. `T` decodes by its own rules, so a wrong type is a decode error. A duplicate
+key: the last occurrence wins. The string `"null"` is a value. `Optional` is decode-only: it has no `MarshalJSON`, so it
+encodes as `{}` and `omitempty` does not omit it. `json.Unmarshal` leaves unnamed keys untouched, so a reused struct
+keeps the previous body's state. Extracted from `ctech-billing` (`api/internal/patch`) in `v1.14.0`.
 
 ## Account erasure (LGPD deletion)
 
