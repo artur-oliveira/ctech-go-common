@@ -78,6 +78,14 @@ directly — that path is the backing repo and may move.
   failure is an error. `Organizations` returns `[]Organization` (`People`/`PendingInvitations` pointers, absent
   = unknown); 8 KiB body cap per membership, 256 KiB per list. Kinds are raw; `IsOrganizationKind("")` is true.
   Caching of answers stays in each service (its TTL is a product decision). Used by ctech-billing and ctech-dfe.
+- `oauthclients` — M2M client for ctech-account's `GET /v1.0/internal/oauth-clients/{client_id}` (scope
+  `ReadScope` = `internal:account:oauth-client-read`): `Get` returns `OAuthClient{ClientID, OwnerUserID,
+  AllowedScopes, Active}` (never the secret; `AllowedScopes` never nil). An unknown client is `ErrNotFound`, told
+  apart from a missing route by the 404's problem `type` (`…/problems/not-found`; a missing route is a
+  problem+json 404 of type `request-error`); every other non-200, a bad body
+  and an answer about another id are errors. Empty or >128-character ids are `ErrNotFound` without a request.
+  `New` returns nil on an incomplete `Config` and a nil `*Client` errors (never permission). No answer caching.
+  Since `v1.17.0`; first consumer ctech-billing (console credentials).
 - `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error
   boundary. No OpenTelemetry/exporter dependency; consumers own domain classification and safe attributes.
 - `problem` — RFC 7807/9457. `Problem` `problem/problem.go`, `FieldError`, type constants, constructors
