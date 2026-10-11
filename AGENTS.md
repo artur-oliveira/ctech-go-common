@@ -33,8 +33,10 @@ directly — that path is the backing repo and may move.
   over-read, the cursor is the key of the last *returned* item (never the over-read page's raw
   `LastEvaluatedKey`, which would skip matches). At the page cap the page may be short — even empty —
   with a cursor, so callers must still treat an absent cursor, not a short page, as end-of-list.
-  Unfiltered queries are one call, unchanged. `QueryRaw` is not wrapped: a caller that passes its own
-  `FilterExpression` with a `Limit` owns the paging loop.
+  Unfiltered queries are one call, unchanged. `QueryRaw` is not wrapped: a hand-built filtered query with a
+  `Limit` whose result is a page goes through `QueryRawFiltered(ctx, input, maxPages)`, which applies the
+  same loop and cursor contract (single call, like `QueryRaw`, without a filter/`Limit` or with
+  `Select: COUNT`).
   `TransactWrite` `:433` — **requires the `dynamodb:TransactWriteItems` IAM permission**.
   `AtomicIncrement` `:441`, `Decode[T]` `:474`, `Encode` `:483`. `MarshalMapOmitNull` `dynamo/marshal.go:33`.
   **Transaction failures are classified by cancellation reason, not by "it was cancelled"**:

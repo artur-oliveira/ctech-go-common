@@ -826,6 +826,36 @@ func (b *Base) QueryRaw(ctx context.Context, input *dynamodb.QueryInput) (*dynam
 	return out, wrapDynamoErr(err)
 }
 
+// QueryRawFiltered runs a Query built by the caller, like QueryRaw, but when
+// the input carries both a FilterExpression and a Limit it returns up to Limit
+// *matching* items, calling DynamoDB up to maxPages times
+// (DefaultFilteredQueryMaxPages when <= 0), with the same cursor contract as a
+// filtered Query: a nil LastEvaluatedKey is the only end-of-list signal, and
+// when the last call over-read, the cursor is the key of the last returned
+// item. Use it instead of QueryRaw for any filtered, limited Query whose
+// result is a page (DynamoDB applies Limit before the filter, so a single
+// QueryRaw call can return an empty page while matches remain).
+//
+// Without a filter, without a Limit, or with Select COUNT it is a single call,
+// exactly like QueryRaw. The input may be modified (ExclusiveStartKey, and the
+// projection when it omits the key attributes).
+func (b *Base) QueryRawFiltered(ctx context.Context, input *dynamodb.QueryInput, maxPages int) (*QueryResult, error) {
+	input.TableName = aws.String(b.TableName)
+	if wantCapacity() && input.ReturnConsumedCapacity == "" {
+		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
+	}
+	if input.FilterExpression == nil || *input.FilterExpression == "" || input.Limit == nil ||
+		*input.Limit <= 0 || input.Select == types.SelectCount {
+		out, err := b.db.Query(ctx, input)
+		if err != nil {
+			return nil, wrapDynamoErr(err)
+		}
+		recordConsumed(OpQuery, out.ConsumedCapacity)
+		return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
+	}
+	return b.queryFiltered(ctx, input, int(*input.Limit), maxPages)
+}
+
 // ScanRaw runs an arbitrary Scan call. Prefer Query/QueryRaw — scans read the
 // whole table/index and don't belong in the hot path (see package docs).
 func (b *Base) ScanRaw(ctx context.Context, input *dynamodb.ScanInput) (*dynamodb.ScanOutput, error) {

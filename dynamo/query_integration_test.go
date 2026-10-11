@@ -354,3 +354,83 @@ func TestUnfilteredQueryIsUnchanged(t *testing.T) {
 		t.Fatalf("cursor %q, want raw %q", got, want)
 	}
 }
+
+// QueryRawFiltered gives a hand-built filtered query (here a numeric filter
+// the typed QueryOpts cannot express) the same fill-and-cursor behaviour.
+func TestQueryRawFilteredFindsMatchesAndPaginatesExactly(t *testing.T) {
+	b, _ := newQueryTable(t)
+	var want []string
+	for i := range 40 {
+		sk := fmt.Sprintf("ROW#%03d", i)
+		year := "2025"
+		if i >= 30 || i%9 == 4 {
+			year = "2026"
+			want = append(want, sk)
+		}
+		if err := b.PutItem(context.Background(), map[string]types.AttributeValue{
+			"pk":   &types.AttributeValueMemberS{Value: "P"},
+			"sk":   &types.AttributeValueMemberS{Value: sk},
+			"year": &types.AttributeValueMemberN{Value: year},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	input := func(limit int32, start map[string]types.AttributeValue) *dynamodb.QueryInput {
+		return &dynamodb.QueryInput{
+			KeyConditionExpression:   aws.String("pk = :pk"),
+			FilterExpression:         aws.String("#y = :y"),
+			ExpressionAttributeNames: map[string]string{"#y": "year"},
+			ExpressionAttributeValues: map[string]types.AttributeValue{
+				":pk": &types.AttributeValueMemberS{Value: "P"},
+				":y":  &types.AttributeValueMemberN{Value: "2026"},
+			},
+			Limit: aws.Int32(limit), ExclusiveStartKey: start,
+		}
+	}
+	for limit := int32(1); limit <= 7; limit++ {
+		var got []string
+		var start map[string]types.AttributeValue
+		for range 1000 {
+			res, err := b.QueryRawFiltered(context.Background(), input(limit, start), 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(res.Items) > int(limit) {
+				t.Fatalf("page of %d exceeds limit %d", len(res.Items), limit)
+			}
+			if res.LastEvaluatedKey != nil && len(res.Items) != int(limit) {
+				t.Fatalf("limit=%d: short page (%d) with a cursor", limit, len(res.Items))
+			}
+			got = append(got, sks(t, res.Items)...)
+			if res.LastEvaluatedKey == nil {
+				break
+			}
+			start = res.LastEvaluatedKey
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("limit=%d got %v\nwant %v", limit, got, want)
+		}
+	}
+}
+
+// Select COUNT is passed through as a single call.
+func TestQueryRawFilteredCountIsASingleCall(t *testing.T) {
+	b, _ := newQueryTable(t)
+	seed(t, b, "P", 10, func(i int) bool { return i >= 5 })
+	res, err := b.QueryRawFiltered(context.Background(), &dynamodb.QueryInput{
+		KeyConditionExpression:   aws.String("pk = :pk"),
+		FilterExpression:         aws.String("#s = :s"),
+		ExpressionAttributeNames: map[string]string{"#s": "status"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: "P"},
+			":s":  &types.AttributeValueMemberS{Value: "match"},
+		},
+		Limit: aws.Int32(3), Select: types.SelectCount,
+	}, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.Items) != 0 || res.LastEvaluatedKey == nil {
+		t.Fatalf("want the raw single COUNT call (no items, a cursor), got %d items, cursor %v", len(res.Items), res.LastEvaluatedKey)
+	}
+}
