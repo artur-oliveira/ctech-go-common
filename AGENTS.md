@@ -81,7 +81,8 @@ directly — that path is the backing repo and may move.
 - `oauthclients` — M2M client for ctech-account's `GET /v1.0/internal/oauth-clients/{client_id}` (scope
   `ReadScope` = `internal:account:oauth-client-read`): `Get` returns `OAuthClient{ClientID, OwnerUserID,
   AllowedScopes, Active}` (never the secret; `AllowedScopes` never nil). An unknown client is `ErrNotFound`, told
-  apart from a missing route by ctech-account's `application/problem+json` 404; every other non-200, a bad body
+  apart from a missing route by the 404's problem `type` (`…/problems/not-found`; a missing route is a
+  problem+json 404 of type `request-error`); every other non-200, a bad body
   and an answer about another id are errors. Empty or >128-character ids are `ErrNotFound` without a request.
   `New` returns nil on an incomplete `Config` and a nil `*Client` errors (never permission). No answer caching.
   Since `v1.17.0`; first consumer ctech-billing (console credentials).

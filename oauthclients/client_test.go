@@ -19,6 +19,9 @@ func serve(t *testing.T, status int, contentType, body string) (*Client, *string
 		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
 			t.Errorf("Authorization = %q", got)
 		}
+		if got := r.Header.Get("Accept"); got != "application/json" {
+			t.Errorf("Accept = %q", got)
+		}
 		w.Header().Set("Content-Type", contentType)
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(body))
@@ -51,17 +54,38 @@ func TestNullScopesBecomeAnEmptyList(t *testing.T) {
 	}
 }
 
-// ctech-account answers an unknown client with an RFC 7807 404. A route that
-// does not exist answers Fiber's plain-text 404: that is a broken deployment,
-// and reading it as "unknown client" would refuse every merchant silently.
-func TestAProblem404IsNotFoundAndAPlain404IsAnError(t *testing.T) {
-	c, _ := serve(t, http.StatusNotFound, "application/problem+json; charset=utf-8", `{"status":404}`)
+// ctech-account answers an unknown client with an RFC 7807 404 of type
+// .../problems/not-found. A route that does not exist also answers a
+// problem+json 404 there (its error handler wraps Fiber's), but of type
+// .../problems/request-error; another server may answer plain text. Either is
+// a broken deployment, and reading it as "unknown client" would refuse every
+// merchant silently.
+func TestOnlyANotFoundProblemIsNotFound(t *testing.T) {
+	c, _ := serve(t, http.StatusNotFound, "application/problem+json; charset=utf-8",
+		`{"type":"https://accounts.aoctech.app/problems/not-found","status":404}`)
 	if _, err := c.getWithToken(context.Background(), "tok", "c"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("problem 404: err = %v, want ErrNotFound", err)
+		t.Fatalf("not-found problem: err = %v, want ErrNotFound", err)
 	}
-	c, _ = serve(t, http.StatusNotFound, "text/plain; charset=utf-8", "Cannot GET")
-	if _, err := c.getWithToken(context.Background(), "tok", "c"); err == nil || errors.Is(err, ErrNotFound) {
-		t.Fatalf("plain 404: err = %v, want a non-NotFound error", err)
+	for name, tc := range map[string]struct{ ct, body string }{
+		"missing route":   {"application/problem+json", `{"type":"https://accounts.aoctech.app/problems/request-error","status":404,"detail":"Cannot GET /v1.0/internal/oauth-clients/c"}`},
+		"untyped problem": {"application/problem+json", `{"status":404}`},
+		"plain text":      {"text/plain; charset=utf-8", "Cannot GET"},
+	} {
+		c, _ = serve(t, http.StatusNotFound, tc.ct, tc.body)
+		if _, err := c.getWithToken(context.Background(), "tok", "c"); err == nil || errors.Is(err, ErrNotFound) {
+			t.Fatalf("%s: err = %v, want a non-NotFound error", name, err)
+		}
+	}
+}
+
+func TestATokenFailureIsNotNotFound(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	c := New(Config{BaseURL: srv.URL, TokenURL: srv.URL + "/token", ClientID: "billing", ClientSecret: "s"})
+	if _, err := c.Get(context.Background(), "c"); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("err = %v, want a non-NotFound error", err)
 	}
 }
 

@@ -10,7 +10,9 @@
 // It fails closed like accountorgs: a nil client, a token failure, an outage,
 // a non-200 other than a problem+json 404, an unreadable body and an answer
 // about another client are errors. An unknown client is ErrNotFound, told apart
-// from a missing route by the problem+json body ctech-account answers it with.
+// from a missing route by the problem type ctech-account answers it with
+// (".../problems/not-found"; a missing route is a problem+json 404 too, but of
+// another type).
 package oauthclients
 
 import (
@@ -35,6 +37,7 @@ const ReadScope = "internal:account:oauth-client-read"
 const (
 	requestTimeout = 6 * time.Second
 	maxBody        = 64 << 10
+	maxProblemBody = 8 << 10
 	// maxClientIDLength is the longest id any ctech-account creation path makes.
 	maxClientIDLength = 128
 )
@@ -113,7 +116,7 @@ func (c *Client) getWithToken(ctx context.Context, token, clientID string) (OAut
 	}
 	defer func() { _ = resp.Body.Close() }()
 	switch {
-	case resp.StatusCode == http.StatusNotFound && isProblem(resp.Header.Get("Content-Type")):
+	case resp.StatusCode == http.StatusNotFound && isNotFoundProblem(resp):
 		return OAuthClient{}, ErrNotFound
 	case resp.StatusCode != http.StatusOK:
 		return OAuthClient{}, fmt.Errorf("ctech-account answered %d", resp.StatusCode)
@@ -131,7 +134,26 @@ func (c *Client) getWithToken(ctx context.Context, token, clientID string) (OAut
 	return out, nil
 }
 
-func isProblem(contentType string) bool {
-	mt, _, err := mime.ParseMediaType(contentType)
-	return err == nil && mt == "application/problem+json"
+// notFoundProblemType ends the type URI ctech-account gives an unknown
+// resource (apierror.NotFound). Matched as a suffix so the problem base URI
+// can move without breaking the reader.
+const notFoundProblemType = "/problems/not-found"
+
+// isNotFoundProblem reports ctech-account's "no such client" answer: an RFC
+// 7807 body whose type is not-found. ctech-account answers an unmatched route
+// with a problem+json 404 as well (type request-error), so the content type
+// alone would read a missing route, a rollback or a wrong BaseURL as "unknown
+// client" and refuse every merchant with a validation error.
+func isNotFoundProblem(resp *http.Response) bool {
+	mt, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	if err != nil || mt != "application/problem+json" {
+		return false
+	}
+	var p struct {
+		Type string `json:"type"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxProblemBody)).Decode(&p); err != nil {
+		return false
+	}
+	return strings.HasSuffix(p.Type, notFoundProblemType)
 }
