@@ -4,7 +4,7 @@ This is a shared foundation library consumed by every CTech Go service — treat
 behavior, error semantics, cache/lock backend choices, health checks) as a cross-repo contract change, not a local
 tweak. Confirmed consumers today (`go.mod` pins as of this audit): `ctech-account/api` (`v1.9.1`), `ctech-dfe/api`
 (`v1.9.1`), `ctech-wallet/api` (`v1.9.1`), `ctech-wallet/pix-gateway` (`v1.7.2`, lagging), `ctech-poker/api`
-(`v1.9.2`), `ctech-billing/api` (`v1.8.0`). See `README.md`/`AGENTS.md` for the full package inventory and API surface.
+(`v1.9.2`), `ctech-billing/api` (`v1.18.0`, the first consumer of `byok` and `inter`). See `README.md`/`AGENTS.md` for the full package inventory and API surface.
 
 ## CTech Family — Cross-Repo Awareness (IMPORTANT)
 

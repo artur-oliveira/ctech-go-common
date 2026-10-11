@@ -26,6 +26,8 @@ between `ctech-dfe/api` and `ctech-wallet/api`:
 | `ratelimit`    | Transport-agnostic, Valkey-backed rate limiter core (throughput-guard `Take` and brute-force-guard `CheckFailures`/`RecordFailure` shapes); each API wraps a `Limiter` in its own thin HTTP middleware |
 | `erasure`      | Participant side of the LGPD account-deletion saga: message contract (`Message`, `Encode`/`Decode`), `{prefix}_erasure_state` lock/tombstone `Store`, SQS `Consumer`, `AckClient`, eligibility/blocker types. Orchestration lives in ctech-account |
 | `patch`        | `Optional[T]` for HTTP PATCH bodies: absent / null / value per field. An explicit JSON null clears an optional field; absent keeps it (see "Partial updates") |
+| `byok`         | Provider-neutral "bring your own key" seam: `Provider` (charges with due date, refunds, statement, balance, webhooks), money in centavos, civil `Date`, the outbound-Lambda envelope (`Request`, `Response`, `Op`, `GroupOf`), wire error codes. `byok/byoktest` is an in-memory `Provider` for tests |
+| `inter`        | Banco Inter's `byok.Provider`: mTLS client with one transport per certificate fingerprint, `FetchToken`, Pix `cobv`/devolução/webhook/callbacks, Banking extrato completo (pagination, never scroll) and saldo, Bacen RFC 7807 errors, `qr.PNG`. Credentials per call; no SSM, no env, no token cache |
 
 ## Import path
 
