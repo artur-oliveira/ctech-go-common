@@ -373,3 +373,11 @@ func TestProjectedNamesResolvesAliasesAndPaths(t *testing.T) {
 		t.Error("no projection must yield nil")
 	}
 }
+
+func TestFilteredQueryRejectsANegativeLimit(t *testing.T) {
+	b := Base{TableName: "t"}
+	_, err := b.Query(t.Context(), QueryOpts{PK: "P", Limit: -1, FilterField: "status", FilterValue: "x"})
+	if err == nil || !strings.Contains(err.Error(), "positive Limit") {
+		t.Fatalf("err = %v, want a positive-Limit error", err)
+	}
+}

@@ -440,12 +440,15 @@ const DefaultFilteredQueryMaxPages = 10
 //     empty) with a non-nil cursor, so callers must never treat a page shorter
 //     than limit as the end of the list.
 func (b *Base) queryFiltered(ctx context.Context, input *dynamodb.QueryInput, limit, maxPages int) (*QueryResult, error) {
+	if limit <= 0 {
+		return nil, fmt.Errorf("dynamo: filtered query needs a positive Limit, got %d", limit)
+	}
 	if maxPages <= 0 {
 		maxPages = DefaultFilteredQueryMaxPages
 	}
 	callerProjection := projectedNames(input)
 	var keyNames []string
-	items := make([]map[string]types.AttributeValue, 0, limit)
+	items := make([]map[string]types.AttributeValue, 0, min(limit, 256))
 
 	for page := 0; ; page++ {
 		out, err := b.db.Query(ctx, input)
