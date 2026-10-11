@@ -86,6 +86,24 @@ directly — that path is the backing repo and may move.
   and an answer about another id are errors. Empty or >128-character ids are `ErrNotFound` without a request.
   `New` returns nil on an incomplete `Config` and a nil `*Client` errors (never permission). No answer caching.
   Since `v1.17.0`; first consumer ctech-billing (console credentials).
+- `byok` — provider-neutral "bring your own key" seam (an organization's own bank/PSP account reached with its own
+  credentials). `Provider` `byok/provider.go` (credentials per call: plaintext `Values` or a sealed `Ref` the caller's
+  outbound Lambda opens); civil `Date` (`ParseDate` `byok/types.go:16`, JSON `"YYYY-MM-DD"`); money in centavos;
+  outbound envelope `Request`/`Response`, `Op`, `AllOps`, `GroupOf` `byok/envelope.go:46` (`read` / `teardown` /
+  `collect` / `sandbox`, the allowlist classes a gate keys on); sentinel errors with wire codes `ErrorCode`
+  `byok/errors.go:37` / `ErrorFromCode` (unknown error = `"internal"`). `byok/byoktest.New` `byok/byoktest/fake.go:30`
+  is a deterministic in-memory `Provider` (`Pay`, `AddLines`, `SetBalanceAt`, `FailNext`, `Calls`). Since `v1.18.0`;
+  first consumer ctech-billing (BYOK phase 1).
+- `inter` — Banco Inter's `byok.Provider`. `NewClient` `inter/client.go:103` caches one `*http.Transport` per
+  client-certificate fingerprint (dropped after 30 min idle); `FetchToken` `:153` (client_credentials over mTLS, never
+  cached here: callers own the token lifecycle); `InspectPair` `:58` (`ErrCertificateInvalid` / `ErrKeyMismatch` /
+  `ErrCertificateExpired`, no network). Calls: `PutCobv`/`GetCobv`/`PatchCobvAmount`/`RemoveCobv`, devolução, Pix
+  webhook get/put/delete, callbacks list/retry (≤ 50 txids), sandbox `PaySandboxCobv` (`inter/pix_calls.go`);
+  `ExtratoCompleto` (pagination, never scroll) and `Saldo` (`inter/banking_calls.go`). Bacen types in `inter/pix`
+  (types only). Statuses map to `byok` errors; a provider body never reaches an error text (only `title` and
+  violation field names). `NewProvider` `inter/provider.go:19`; `Connect` `:41` asks the full phase-1 scope set and
+  falls back to `extrato.read` (statement-only); `ParseCallback` `inter/callback.go:13` keeps references only.
+  `inter/qr.PNG` renders a BR Code. Reads no SSM and no environment. Since `v1.18.0`.
 - `observability` — context-aware structured logging plus `observability/fiber` Request-ID middleware and HTTP error
   boundary. No OpenTelemetry/exporter dependency; consumers own domain classification and safe attributes.
 - `problem` — RFC 7807/9457. `Problem` `problem/problem.go`, `FieldError`, type constants, constructors
@@ -128,7 +146,7 @@ versions — confirm before relying on a symbol added after a given tag:
 | `ctech-wallet/api`              | `v1.9.1`        |
 | `ctech-wallet/pix-gateway`      | `v1.7.2` (lagging) |
 | `ctech-poker/api`               | `v1.9.2`        |
-| `ctech-billing/api`             | `v1.8.0`        |
+| `ctech-billing/api`             | `v1.18.0` (`byok`, `inter`) |
 
 To add a symbol used by a lagging consumer, either bump that consumer's pin or keep the new symbol out of the shared
 contract until all are upgraded.
