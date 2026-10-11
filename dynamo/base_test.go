@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 )
 
@@ -352,5 +353,31 @@ func TestCancellationReasonsFallBackToTheMessage(t *testing.T) {
 	opaque := &types.TransactionCanceledException{Message: aws.String("Transaction cancelled")}
 	if IsConditionFailed(opaque) || IsTransactionConflict(opaque) || IsTransactionThrottled(opaque) {
 		t.Error("an unclassifiable cancellation must not impersonate any specific reason")
+	}
+}
+
+func TestProjectedNamesResolvesAliasesAndPaths(t *testing.T) {
+	got := projectedNames(&dynamodb.QueryInput{
+		ProjectionExpression:     aws.String("payload, #s, items[0], meta.created_at"),
+		ExpressionAttributeNames: map[string]string{"#s": "status"},
+	})
+	for _, want := range []string{"payload", "status", "items", "meta"} {
+		if !got[want] {
+			t.Errorf("projectedNames missing %q: %v", want, got)
+		}
+	}
+	if len(got) != 4 {
+		t.Errorf("projectedNames = %v, want 4 names", got)
+	}
+	if projectedNames(&dynamodb.QueryInput{}) != nil {
+		t.Error("no projection must yield nil")
+	}
+}
+
+func TestFilteredQueryRejectsANegativeLimit(t *testing.T) {
+	b := Base{TableName: "t"}
+	_, err := b.Query(t.Context(), QueryOpts{PK: "P", Limit: -1, FilterField: "status", FilterValue: "x"})
+	if err == nil || !strings.Contains(err.Error(), "positive Limit") {
+		t.Fatalf("err = %v, want a positive-Limit error", err)
 	}
 }

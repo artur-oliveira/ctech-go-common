@@ -25,10 +25,18 @@ directly — that path is the backing repo and may move.
   `QueryOpts` filters are typed pairs, never raw expressions: `FilterField`/`FilterValue` (equality) and
   `FilterContainsField`/`FilterContainsValue` (`contains(#f, :v)`, for list membership such as
   `persons.roles` holding `"driver"`). Both pairs set → ANDed by `buildFilterExpr`. The filtered attribute
-  must be projected into the queried index. A `FilterExpression` is applied **after** the key condition, so
-  `Limit` counts items *read*, not returned — a filtered query legitimately returns fewer than `Limit`
-  items alongside a `LastEvaluatedKey`; callers must treat an absent cursor, not a short page, as
-  end-of-list.
+  must be projected into the queried index. DynamoDB applies `Limit` to the items it *evaluates*, before
+  the `FilterExpression`, so one call can return an empty page while matches sit further down the
+  partition. Since v1.16.0 a filtered `Query` keeps calling (following `LastEvaluatedKey`, each call
+  evaluating up to `Limit` items) until `Limit` matches are collected, the partition ends, or
+  `QueryOpts.MaxPages` calls are spent (default `DefaultFilteredQueryMaxPages` = 10). When the last call
+  over-read, the cursor is the key of the last *returned* item (never the over-read page's raw
+  `LastEvaluatedKey`, which would skip matches). At the page cap the page may be short — even empty —
+  with a cursor, so callers must still treat an absent cursor, not a short page, as end-of-list.
+  Unfiltered queries are one call, unchanged. `QueryRaw` is not wrapped: a hand-built filtered query with a
+  `Limit` whose result is a page goes through `QueryRawFiltered(ctx, input, maxPages)`, which applies the
+  same loop and cursor contract (single call, like `QueryRaw`, without a filter/`Limit` or with
+  `Select: COUNT`).
   `TransactWrite` `:433` — **requires the `dynamodb:TransactWriteItems` IAM permission**.
   `AtomicIncrement` `:441`, `Decode[T]` `:474`, `Encode` `:483`. `MarshalMapOmitNull` `dynamo/marshal.go:33`.
   **Transaction failures are classified by cancellation reason, not by "it was cancelled"**:
