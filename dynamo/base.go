@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strconv"
 	"strings"
@@ -538,15 +539,18 @@ func injectKeyProjection(input *dynamodb.QueryInput, keyNames []string, callerPr
 		return
 	}
 	expr := *input.ProjectionExpression
+	// A copy: the caller may share its names map across goroutines or calls.
+	names := maps.Clone(input.ExpressionAttributeNames)
+	if names == nil {
+		names = make(map[string]string)
+	}
+	defer func() { input.ExpressionAttributeNames = names }()
 	for i, k := range keyNames {
 		if callerProjection[k] {
 			continue
 		}
-		alias := fmt.Sprintf("#cursor_key%d", i)
-		if input.ExpressionAttributeNames == nil {
-			input.ExpressionAttributeNames = make(map[string]string)
-		}
-		input.ExpressionAttributeNames[alias] = k
+		alias := fmt.Sprintf("#__ctech_cursor_key%d", i)
+		names[alias] = k
 		expr += ", " + alias
 	}
 	input.ProjectionExpression = aws.String(expr)
@@ -840,9 +844,10 @@ func (b *Base) QueryRaw(ctx context.Context, input *dynamodb.QueryInput) (*dynam
 // QueryRaw call can return an empty page while matches remain).
 //
 // Without a filter, without a Limit, or with Select COUNT it is a single call,
-// exactly like QueryRaw. The input may be modified (ExclusiveStartKey, and the
-// projection when it omits the key attributes).
+// exactly like QueryRaw. The caller's input is not modified.
 func (b *Base) QueryRawFiltered(ctx context.Context, input *dynamodb.QueryInput, maxPages int) (*QueryResult, error) {
+	in := *input // the paging loop mutates the input; leave the caller's alone
+	input = &in
 	input.TableName = aws.String(b.TableName)
 	if wantCapacity() && input.ReturnConsumedCapacity == "" {
 		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal

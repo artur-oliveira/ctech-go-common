@@ -55,6 +55,7 @@ func newQueryTable(t *testing.T) (*Base, *dynamodb.Client) {
 			{AttributeName: aws.String("sk"), AttributeType: types.ScalarAttributeTypeS},
 			{AttributeName: aws.String("owner_pk"), AttributeType: types.ScalarAttributeTypeS},
 			{AttributeName: aws.String("created_at"), AttributeType: types.ScalarAttributeTypeS},
+			{AttributeName: aws.String("status"), AttributeType: types.ScalarAttributeTypeS},
 		},
 		KeySchema: []types.KeySchemaElement{
 			{AttributeName: aws.String("pk"), KeyType: types.KeyTypeHash},
@@ -67,6 +68,18 @@ func newQueryTable(t *testing.T) (*Base, *dynamodb.Client) {
 				{AttributeName: aws.String("created_at"), KeyType: types.KeyTypeRange},
 			},
 			Projection: &types.Projection{ProjectionType: types.ProjectionTypeAll},
+		}, {
+			// Many rows share one sort-key value here, so only the table keys in
+			// the cursor tell them apart.
+			IndexName: aws.String("by-status"),
+			KeySchema: []types.KeySchemaElement{
+				{AttributeName: aws.String("owner_pk"), KeyType: types.KeyTypeHash},
+				{AttributeName: aws.String("status"), KeyType: types.KeyTypeRange},
+			},
+			Projection: &types.Projection{
+				ProjectionType:   types.ProjectionTypeInclude,
+				NonKeyAttributes: []string{"payload", "tags"},
+			},
 		}},
 	})
 	if err != nil {
@@ -432,5 +445,83 @@ func TestQueryRawFilteredCountIsASingleCall(t *testing.T) {
 	}
 	if len(res.Items) != 0 || res.LastEvaluatedKey == nil {
 		t.Fatalf("want the raw single COUNT call (no items, a cursor), got %d items, cursor %v", len(res.Items), res.LastEvaluatedKey)
+	}
+}
+
+// A GSI whose rows share a sort-key value, queried with a projection that
+// leaves every key out: the cursor must still carry the table keys.
+func TestFilteredQueryOnAGSIWithDuplicateSortKeys(t *testing.T) {
+	b, _ := newQueryTable(t)
+	var want []string
+	for i := range 30 {
+		tag := "no"
+		if i%4 == 0 || i > 24 {
+			tag = "yes"
+			want = append(want, fmt.Sprintf("ROW#%03d", i))
+		}
+		if err := b.PutItem(context.Background(), map[string]types.AttributeValue{
+			"pk":         &types.AttributeValueMemberS{Value: "P"},
+			"sk":         &types.AttributeValueMemberS{Value: fmt.Sprintf("ROW#%03d", i)},
+			"owner_pk":   &types.AttributeValueMemberS{Value: "G"},
+			"created_at": &types.AttributeValueMemberS{Value: "x"},
+			"status":     &types.AttributeValueMemberS{Value: "same"},
+			"tags":       &types.AttributeValueMemberL{Value: []types.AttributeValue{&types.AttributeValueMemberS{Value: tag}}},
+			"payload":    &types.AttributeValueMemberS{Value: fmt.Sprintf("p-ROW#%03d", i)},
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for limit := 1; limit <= 5; limit++ {
+		opts := QueryOpts{
+			IndexName: "by-status", PKField: "owner_pk", SKField: "status",
+			PK: "G", ScanIndexForward: true, Limit: limit,
+			FilterContainsField: "tags", FilterContainsValue: "yes",
+			ProjectionExpression: "payload",
+		}
+		var got []string
+		for range 1000 {
+			res, err := b.Query(context.Background(), opts)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, it := range res.Items {
+				if len(it) != 1 {
+					t.Fatalf("projection leaked attributes: %v", it)
+				}
+				got = append(got, it["payload"].(*types.AttributeValueMemberS).Value[2:])
+			}
+			if res.LastEvaluatedKey == nil {
+				break
+			}
+			opts.ExclusiveStartKey = res.LastEvaluatedKey
+		}
+		slices.Sort(got) // ties on the index sort key have no defined order
+		if !slices.Equal(got, want) {
+			t.Fatalf("limit=%d got %v\nwant %v", limit, got, want)
+		}
+	}
+}
+
+// QueryRawFiltered leaves the caller's input, and its names map, untouched.
+func TestQueryRawFilteredDoesNotMutateTheCallersInput(t *testing.T) {
+	b, _ := newQueryTable(t)
+	seed(t, b, "P", 20, func(i int) bool { return i%2 == 0 })
+	names := map[string]string{"#s": "status"}
+	input := &dynamodb.QueryInput{
+		KeyConditionExpression:   aws.String("pk = :pk"),
+		FilterExpression:         aws.String("#s = :s"),
+		ProjectionExpression:     aws.String("payload"),
+		ExpressionAttributeNames: names,
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":pk": &types.AttributeValueMemberS{Value: "P"},
+			":s":  &types.AttributeValueMemberS{Value: "match"},
+		},
+		Limit: aws.Int32(3),
+	}
+	if _, err := b.QueryRawFiltered(context.Background(), input, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(names) != 1 || input.ExclusiveStartKey != nil || *input.ProjectionExpression != "payload" || input.TableName != nil {
+		t.Fatalf("input mutated: names=%v start=%v proj=%q table=%v", names, input.ExclusiveStartKey, *input.ProjectionExpression, input.TableName)
 	}
 }
