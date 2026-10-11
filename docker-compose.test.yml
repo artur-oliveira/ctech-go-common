@@ -1,0 +1,10 @@
+# DynamoDB Local for the integration tests (go test -tags integration).
+#
+#   docker compose -f docker-compose.test.yml up -d
+#   DYNAMODB_ENDPOINT=http://localhost:8131 go test -tags integration -race -count=1 ./...
+services:
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    ports:
+      - "8131:8000"
+    command: [ "-jar", "DynamoDBLocal.jar", "-sharedDb", "-inMemory" ]

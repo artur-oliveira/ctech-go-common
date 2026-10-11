@@ -11,6 +11,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -348,6 +349,13 @@ type QueryResult struct {
 }
 
 // Query runs a DynamoDB Query with optional SK prefix and pagination.
+//
+// Without a filter it is a single DynamoDB call: up to Limit items and the raw
+// LastEvaluatedKey. With a filter (FilterField/FilterContainsField) it returns
+// up to Limit *matching* items, calling DynamoDB as many times as needed (up to
+// MaxPages), because DynamoDB applies Limit before the filter — see
+// queryFiltered for the cursor contract. In both cases a nil LastEvaluatedKey
+// is the only end-of-list signal; a short page does not mean the end.
 func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) {
 	opts.defaults()
 	input := &dynamodb.QueryInput{
@@ -396,12 +404,163 @@ func (b *Base) Query(ctx context.Context, opts QueryOpts) (*QueryResult, error) 
 		input.ReturnConsumedCapacity = types.ReturnConsumedCapacityTotal
 	}
 
+	if input.FilterExpression != nil {
+		return b.queryFiltered(ctx, input, opts.Limit, opts.MaxPages)
+	}
+
 	out, err := b.db.Query(ctx, input)
 	if err != nil {
 		return nil, wrapDynamoErr(err)
 	}
 	recordConsumed(OpQuery, out.ConsumedCapacity)
 	return &QueryResult{Items: out.Items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
+}
+
+// DefaultFilteredQueryMaxPages is how many DynamoDB calls a filtered Query
+// makes at most while collecting Limit matching items, when QueryOpts.MaxPages
+// is unset. Each call evaluates up to Limit items, so one request reads at most
+// MaxPages*Limit items regardless of how sparse the filter is.
+const DefaultFilteredQueryMaxPages = 10
+
+// queryFiltered runs a Query whose input carries a FilterExpression.
+//
+// DynamoDB applies Limit to the items it evaluates, *before* the filter, so one
+// call can return an empty or short page while matching items sit further down
+// the partition. This keeps calling (following LastEvaluatedKey) until limit
+// matches are collected, the partition is exhausted, or maxPages calls are
+// spent.
+//
+// The returned cursor is always safe to resume from:
+//   - partition exhausted: nil (the only end-of-list signal);
+//   - the last call evaluated more matches than were still wanted: the key of
+//     the last returned item, so the rest of that page is re-evaluated on the
+//     next request instead of being skipped;
+//   - otherwise (exactly limit matches, or the page cap was hit): the raw
+//     LastEvaluatedKey of the last call. At the cap the page can be short (even
+//     empty) with a non-nil cursor, so callers must never treat a page shorter
+//     than limit as the end of the list.
+func (b *Base) queryFiltered(ctx context.Context, input *dynamodb.QueryInput, limit, maxPages int) (*QueryResult, error) {
+	if maxPages <= 0 {
+		maxPages = DefaultFilteredQueryMaxPages
+	}
+	callerProjection := projectedNames(input)
+	var keyNames []string
+	items := make([]map[string]types.AttributeValue, 0, limit)
+
+	for page := 0; ; page++ {
+		out, err := b.db.Query(ctx, input)
+		if err != nil {
+			return nil, wrapDynamoErr(err)
+		}
+		recordConsumed(OpQuery, out.ConsumedCapacity)
+
+		want := limit - len(items)
+		if len(out.Items) > want {
+			// Only reachable after the first call (which evaluates at most limit
+			// items), so a LastEvaluatedKey, and with it the key schema, is known.
+			items = append(items, out.Items[:want]...)
+			cursor, err := cursorFrom(items[len(items)-1], keyNames)
+			if err != nil {
+				return nil, err
+			}
+			stripInjected(items, keyNames, callerProjection)
+			return &QueryResult{Items: items, LastEvaluatedKey: cursor}, nil
+		}
+		items = append(items, out.Items...)
+
+		if len(out.LastEvaluatedKey) == 0 || len(items) == limit || page+1 >= maxPages {
+			stripInjected(items, keyNames, callerProjection)
+			return &QueryResult{Items: items, LastEvaluatedKey: out.LastEvaluatedKey}, nil
+		}
+		if keyNames == nil {
+			keyNames = sortedKeys(out.LastEvaluatedKey)
+			injectKeyProjection(input, keyNames, callerProjection)
+		}
+		input.ExclusiveStartKey = out.LastEvaluatedKey
+	}
+}
+
+// cursorFrom builds an ExclusiveStartKey pointing at item from the key
+// attribute names (taken from a LastEvaluatedKey of the same query, so they
+// match the table/index key schema exactly).
+func cursorFrom(item map[string]types.AttributeValue, keyNames []string) (map[string]types.AttributeValue, error) {
+	if len(keyNames) == 0 {
+		return nil, errors.New("dynamo: filtered query truncated a page before learning the key schema")
+	}
+	cursor := make(map[string]types.AttributeValue, len(keyNames))
+	for _, k := range keyNames {
+		v, ok := item[k]
+		if !ok {
+			return nil, fmt.Errorf("dynamo: filtered query item lacks key attribute %q for its cursor", k)
+		}
+		cursor[k] = v
+	}
+	return cursor, nil
+}
+
+func sortedKeys(m map[string]types.AttributeValue) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// projectedNames returns the top-level attribute names a ProjectionExpression
+// selects (aliases resolved), or nil when the query has no projection.
+func projectedNames(input *dynamodb.QueryInput) map[string]bool {
+	if input.ProjectionExpression == nil || *input.ProjectionExpression == "" {
+		return nil
+	}
+	names := make(map[string]bool)
+	for _, path := range strings.Split(*input.ProjectionExpression, ",") {
+		path = strings.TrimSpace(path)
+		if i := strings.IndexAny(path, ".["); i >= 0 {
+			path = path[:i]
+		}
+		if real, ok := input.ExpressionAttributeNames[path]; ok {
+			path = real
+		}
+		names[path] = true
+	}
+	return names
+}
+
+// injectKeyProjection adds the key attributes to a ProjectionExpression that
+// leaves them out, so a truncated page's cursor can be built from its last
+// item. stripInjected removes them again before the items are returned.
+func injectKeyProjection(input *dynamodb.QueryInput, keyNames []string, callerProjection map[string]bool) {
+	if callerProjection == nil {
+		return
+	}
+	expr := *input.ProjectionExpression
+	for i, k := range keyNames {
+		if callerProjection[k] {
+			continue
+		}
+		alias := fmt.Sprintf("#cursor_key%d", i)
+		if input.ExpressionAttributeNames == nil {
+			input.ExpressionAttributeNames = make(map[string]string)
+		}
+		input.ExpressionAttributeNames[alias] = k
+		expr += ", " + alias
+	}
+	input.ProjectionExpression = aws.String(expr)
+}
+
+func stripInjected(items []map[string]types.AttributeValue, keyNames []string, callerProjection map[string]bool) {
+	if callerProjection == nil {
+		return
+	}
+	for _, k := range keyNames {
+		if callerProjection[k] {
+			continue
+		}
+		for _, it := range items {
+			delete(it, k)
+		}
+	}
 }
 
 // buildFilterExpr assembles the FilterExpression for a Query from the typed
@@ -458,6 +617,10 @@ type QueryOpts struct {
 	ProjectionExpression string
 	// ConsistentRead requests a strongly consistent read. Not valid on a GSI.
 	ConsistentRead bool
+	// MaxPages caps the DynamoDB calls one filtered Query may make while
+	// collecting Limit matching items (default DefaultFilteredQueryMaxPages).
+	// Ignored without a filter.
+	MaxPages int
 }
 
 func (o *QueryOpts) defaults() {
