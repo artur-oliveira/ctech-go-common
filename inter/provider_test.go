@@ -75,3 +75,60 @@ func TestATokenNarrowedByInterIsStillReadAsGranted(t *testing.T) {
 		t.Fatalf("a partial collection set must not be collection-capable: %+v", got)
 	}
 }
+
+func TestATransientTokenFailureIsNotReadAsAStatementOnlyIntegration(t *testing.T) {
+	calls := 0
+	prov, cr := fakeInter(t, func(scope string) (int, string) {
+		calls++
+		if calls == 1 {
+			return 503, ""
+		}
+		return 200, scope
+	})
+	if _, err := prov.Connect(context.Background(), cr); !errors.Is(err, byok.ErrUnavailable) {
+		t.Fatalf("a 503 on the full scope set must surface, not downgrade the connection: %v", err)
+	}
+}
+
+func TestAnUnknownChargeStatusIsAnErrorNotRemoved(t *testing.T) {
+	c, cr, _ := recorder(t, `{"txid":"ctb01JABCDEFGHJKMNPQRSTVWXYZ","status":""}`, 200)
+	prov := NewProvider(c)
+	bc := byok.Credentials{Values: map[string]string{"client_id": "c", "client_secret": "s",
+		"cert_pem": string(cr.CertPEM), "key_pem": string(cr.KeyPEM)}}
+	if _, err := prov.GetCharge(context.Background(), bc, byok.Token{Value: "t"}, "ctb01JABCDEFGHJKMNPQRSTVWXYZ"); !errors.Is(err, byok.ErrUnavailable) {
+		t.Fatalf("an unknown status must not read as removed: %v", err)
+	}
+}
+
+func TestAStatementLineWithAnUnreadableAmountIsSkippedNotPostedAsZero(t *testing.T) {
+	c, cr, _ := recorder(t, `{"totalPaginas":1,"transacoes":[`+
+		`{"idTransacao":"T1","dataTransacao":"2026-10-01","tipoOperacao":"C","valor":"10,50"},`+
+		`{"idTransacao":"T2","dataTransacao":"2026-10-01","tipoOperacao":"X","valor":"1.00"},`+
+		`{"idTransacao":"T3","dataTransacao":"2026-10-01","tipoOperacao":"D","valor":"2.00"}]}`, 200)
+	prov := NewProvider(c)
+	bc := byok.Credentials{Values: map[string]string{"client_id": "c", "client_secret": "s",
+		"cert_pem": string(cr.CertPEM), "key_pem": string(cr.KeyPEM)}}
+	d, _ := byok.ParseDate("2026-10-01")
+	page, err := prov.StatementPage(context.Background(), bc, byok.Token{Value: "t"}, d, d, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page.Lines) != 1 || page.Lines[0].ID != "T3" || page.Lines[0].Amount != 200 || page.Lines[0].Direction != byok.Debit {
+		t.Fatalf("only the readable line is kept: %+v", page.Lines)
+	}
+}
+
+func TestCallbackHistoryTakesTheTxidFromThePayload(t *testing.T) {
+	c, cr, _ := recorder(t, `{"totalPaginas":1,"data":[{"webhookUrl":"https://h/w","numeroTentativa":2,"httpStatus":503,`+
+		`"dataHoraDisparo":"2026-10-11T10:00:00Z","payload":{"pix":[{"endToEndId":"E1","txid":"ctb01JABCDEFGHJKMNPQRSTVWXYZ"}]}}]}`, 200)
+	prov := NewProvider(c)
+	bc := byok.Credentials{Values: map[string]string{"client_id": "c", "client_secret": "s",
+		"cert_pem": string(cr.CertPEM), "key_pem": string(cr.KeyPEM)}}
+	got, err := prov.ListCallbacks(context.Background(), bc, byok.Token{Value: "t"}, time.Now().Add(-time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].ChargeRef != "ctb01JABCDEFGHJKMNPQRSTVWXYZ" || got[0].HTTPStatus != 503 || got[0].Attempt != 2 {
+		t.Fatalf("%+v", got)
+	}
+}

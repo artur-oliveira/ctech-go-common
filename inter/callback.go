@@ -20,6 +20,11 @@ func (p *Provider) ParseCallback(product byok.Product, headers map[string]string
 	}
 	out := byok.Callback{Account: headers["x-conta-corrente"]}
 	for _, r := range b.Pix {
+		// A Pix received on the key without a txid (a plain transfer) or a
+		// devolução notice names no charge: skip it, keep the rest of the batch.
+		if r.Txid == "" {
+			continue
+		}
 		if !ValidTxid(r.Txid) {
 			return byok.Callback{}, fmt.Errorf("%w: txid", byok.ErrInvalidRequest)
 		}

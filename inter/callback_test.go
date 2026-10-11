@@ -20,3 +20,11 @@ func TestParseCallbackTakesOnlyReferences(t *testing.T) {
 		t.Fatal("a reference outside Bacen's txid rule is refused")
 	}
 }
+
+func TestAPixWithoutTxidInTheBatchDoesNotLoseTheChargePayment(t *testing.T) {
+	body := `{"pix":[{"endToEndId":"E0","valor":"5.00"},{"endToEndId":"E1","txid":"ctb01JABCDEFGHJKMNPQRSTVWXYZ"}]}`
+	got, err := NewProvider(NewClient()).ParseCallback(byok.ProductPix, nil, []byte(body))
+	if err != nil || len(got.ChargeRefs) != 1 || got.ChargeRefs[0] != "ctb01JABCDEFGHJKMNPQRSTVWXYZ" || len(got.PaymentIDs) != 1 || got.PaymentIDs[0] != "E1" {
+		t.Fatalf("%+v %v", got, err)
+	}
+}

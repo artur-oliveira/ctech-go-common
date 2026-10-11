@@ -2,6 +2,8 @@ package inter
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -50,7 +52,12 @@ func (p *Provider) Connect(ctx context.Context, c byok.Credentials) (byok.Connec
 	asked := append(slices.Clone(ScopesStatement), ScopesCollection...)
 	tok, err := p.c.FetchToken(ctx, cr, asked)
 	if err != nil {
-		// D23: a statement-only integration is accepted.
+		// D23: a statement-only integration is accepted. Only a refusal of the
+		// scope set falls back: a transient failure (5xx, timeout, rate limit)
+		// must not store a fully-scoped integration as statement-only.
+		if !errors.Is(err, byok.ErrCredentialsRefused) && !errors.Is(err, byok.ErrScopesRefused) && !errors.Is(err, byok.ErrInvalidRequest) {
+			return byok.Connected{}, err
+		}
 		asked = ScopesStatement
 		if tok, err = p.c.FetchToken(ctx, cr, asked); err != nil {
 			return byok.Connected{}, err
@@ -129,16 +136,18 @@ func (p *Provider) CreateDueCharge(ctx context.Context, c byok.Credentials, t by
 	if err != nil {
 		// PUT on an existing txid: read it back (idempotent create, spec § 7.2).
 		if existing, gerr := p.c.GetCobv(ctx, cr, t.Value, in.Ref); gerr == nil {
-			return chargeOf(existing), nil
+			return chargeOf(existing)
 		}
 		return byok.Charge{}, err
 	}
-	return chargeOf(got), nil
+	return chargeOf(got)
 }
 
 func cents(s string) int64 { v, _ := Cents(s); return v }
 
-func chargeOf(v pix.Cobv) byok.Charge {
+// chargeOf maps a cobv. An unknown status (an empty body, a status Inter adds
+// later) is an error, never "removed": a caller must not fail a live charge.
+func chargeOf(v pix.Cobv) (byok.Charge, error) {
 	ch := byok.Charge{Ref: v.Txid, Amount: cents(v.Valor.Original), Payable: v.PixCopiaECola}
 	switch v.Status {
 	case pix.StatusAtiva:
@@ -147,8 +156,10 @@ func chargeOf(v pix.Cobv) byok.Charge {
 		ch.Status = byok.ChargePaid
 	case pix.StatusRemovidaPSP:
 		ch.Status = byok.ChargeExpired
-	default:
+	case pix.StatusRemovidaRecebedor:
 		ch.Status = byok.ChargeRemoved
+	default:
+		return byok.Charge{}, fmt.Errorf("%w: cobv status %q", byok.ErrUnavailable, v.Status)
 	}
 	for _, r := range v.Pix {
 		pay := byok.Payment{ID: r.EndToEndID, Amount: cents(r.Valor)}
@@ -168,7 +179,7 @@ func chargeOf(v pix.Cobv) byok.Charge {
 	if len(ch.Payments) > 0 {
 		ch.Status = byok.ChargePaid
 	}
-	return ch
+	return ch, nil
 }
 
 func (p *Provider) GetCharge(ctx context.Context, c byok.Credentials, t byok.Token, ref string) (byok.Charge, error) {
@@ -180,7 +191,7 @@ func (p *Provider) GetCharge(ctx context.Context, c byok.Credentials, t byok.Tok
 	if err != nil {
 		return byok.Charge{}, err
 	}
-	return chargeOf(v), nil
+	return chargeOf(v)
 }
 
 func (p *Provider) UpdateCharge(ctx context.Context, c byok.Credentials, t byok.Token, ref string, amount int64) (byok.Charge, error) {
@@ -192,7 +203,7 @@ func (p *Provider) UpdateCharge(ctx context.Context, c byok.Credentials, t byok.
 	if err != nil {
 		return byok.Charge{}, err
 	}
-	return chargeOf(v), nil
+	return chargeOf(v)
 }
 
 func (p *Provider) CancelCharge(ctx context.Context, c byok.Credentials, t byok.Token, ref string) error {
@@ -255,11 +266,20 @@ func (p *Provider) StatementPage(ctx context.Context, c byok.Credentials, t byok
 		if err != nil {
 			continue // unreadable line: the balance difference banner shows it (spec § 8.1)
 		}
-		dir := byok.Credit
-		if strings.EqualFold(l.TipoOperacao, "D") {
+		// An unreadable amount or direction is skipped like an unreadable date:
+		// posting it as zero would consume the line's lock with a wrong entry.
+		amount, aerr := Cents(l.Valor)
+		var dir byok.Direction
+		switch strings.ToUpper(l.TipoOperacao) {
+		case "C":
+			dir = byok.Credit
+		case "D":
 			dir = byok.Debit
 		}
-		out.Lines = append(out.Lines, byok.StatementLine{ID: l.IDTransacao, Date: d, Direction: dir, Amount: cents(l.Valor),
+		if aerr != nil || dir == "" || l.IDTransacao == "" {
+			continue
+		}
+		out.Lines = append(out.Lines, byok.StatementLine{ID: l.IDTransacao, Date: d, Direction: dir, Amount: amount,
 			Title: l.Titulo, Description: l.Descricao, ChargeRef: l.Detalhes.TxID, PaymentID: l.Detalhes.EndToEndID})
 	}
 	return out, nil
@@ -332,7 +352,26 @@ func (p *Provider) ListCallbacks(ctx context.Context, c byok.Credentials, t byok
 	out := make([]byok.CallbackAttempt, 0, len(recs))
 	for _, r := range recs {
 		at, _ := time.Parse(time.RFC3339, r.DataHoraDisparo)
-		out = append(out, byok.CallbackAttempt{ChargeRef: r.Txid, HTTPStatus: r.HTTPStatus, Attempt: r.NumeroTentativa, At: at.UTC()})
+		// The record names its charges inside the payload it delivered
+		// (pix[].txid); a top-level txid is only a fallback.
+		refs := []string{}
+		var body pix.CallbackBody
+		if json.Unmarshal(r.Payload, &body) == nil {
+			for _, x := range body.Pix {
+				if x.Txid != "" {
+					refs = append(refs, x.Txid)
+				}
+			}
+		}
+		if len(refs) == 0 && r.Txid != "" {
+			refs = append(refs, r.Txid)
+		}
+		for _, ref := range refs {
+			out = append(out, byok.CallbackAttempt{ChargeRef: ref, HTTPStatus: r.HTTPStatus, Attempt: r.NumeroTentativa, At: at.UTC()})
+		}
+		if len(refs) == 0 {
+			out = append(out, byok.CallbackAttempt{HTTPStatus: r.HTTPStatus, Attempt: r.NumeroTentativa, At: at.UTC()})
+		}
 	}
 	return out, nil
 }
@@ -342,6 +381,7 @@ func (p *Provider) RetryCallbacks(ctx context.Context, c byok.Credentials, t byo
 	if err != nil {
 		return err
 	}
+	refs = slices.DeleteFunc(slices.Clone(refs), func(r string) bool { return r == "" })
 	for start := 0; start < len(refs); start += maxRetryTxids {
 		if err := p.c.RetryCallbacks(ctx, cr, t.Value, refs[start:min(start+maxRetryTxids, len(refs))]); err != nil {
 			return err
