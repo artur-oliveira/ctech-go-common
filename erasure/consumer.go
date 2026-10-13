@@ -28,10 +28,29 @@ type Consumer struct {
 	purge    PurgeFunc
 	acks     *AckClient
 	now      func() time.Time
+	onLock   func(ctx context.Context, sub string)
 }
 
 func NewConsumer(sqsClient sqsAPI, queueURL, service string, store *Store, purge PurgeFunc, acks *AckClient) *Consumer {
 	return &Consumer{sqs: sqsClient, queueURL: queueURL, service: service, store: store, purge: purge, acks: acks, now: time.Now}
+}
+
+// OnLock registers a hook called when this consumer moves a sub to locked: on
+// user.locked, or on the synthetic lock applied before a user.erase. It is not
+// called for a redelivery or a stale message (the state did not change). A
+// service uses it to cut what is already open (websockets) on the instance that
+// got the message; fan-out to the other instances is the service's job. The
+// hook has no error return: a failure cannot redeliver the message, so the
+// connect-time Store.Blocked check remains the safety net.
+func (c *Consumer) OnLock(fn func(ctx context.Context, sub string)) *Consumer {
+	c.onLock = fn
+	return c
+}
+
+func (c *Consumer) locked(ctx context.Context, sub string, rec Record, changed bool) {
+	if changed && rec.State == StateLocked && c.onLock != nil {
+		c.onLock(ctx, sub)
+	}
 }
 
 // Run long-polls until ctx is cancelled. A message is deleted only after it was
@@ -89,18 +108,23 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	}
 	key := SubKey(m.Sub)
 	if m.Type != TypeErase {
-		_, err := c.store.Apply(ctx, key, m)
-		return err
+		rec, changed, err := c.store.ApplyChanged(ctx, key, m)
+		if err != nil {
+			return err
+		}
+		c.locked(ctx, m.Sub, rec, changed)
+		return nil
 	}
 
 	// Lock first: the user.locked may have been lost, and writes must stop
 	// before the purge starts. A no-op if already locked or erased.
 	lock := m
 	lock.Type = TypeLocked
-	rec, err := c.store.Apply(ctx, key, lock)
+	rec, changed, err := c.store.ApplyChanged(ctx, key, lock)
 	if err != nil {
 		return err
 	}
+	c.locked(ctx, m.Sub, rec, changed)
 	if rec.State == StateActive {
 		// Stale erase. If the user came back (Clear) after this very request
 		// was purged, the work was done: ack it done (the first ack may have

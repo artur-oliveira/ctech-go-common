@@ -262,3 +262,60 @@ func TestConsumer_StaleEraseFromOtherRequest_NotAckedDone(t *testing.T) {
 		t.Fatalf("purge calls=%d acks=%d, want 0/0", p.calls, len(a.received()))
 	}
 }
+
+func TestConsumer_OnLockFiresOnceWhenTheStateMoves(t *testing.T) {
+	ctx := context.Background()
+	c, _, _ := newTestConsumer(t, "wallet", &purgeRecorder{ack: Ack{Result: ResultDone}})
+	var got []string
+	c.OnLock(func(_ context.Context, sub string) { got = append(got, sub) })
+
+	lock := body(t, msgAt(TypeLocked, "r1", 0))
+	for i := 0; i < 2; i++ { // the second delivery is a no-op
+		if err := c.handle(ctx, lock); err != nil {
+			t.Fatalf("lock: %v", err)
+		}
+	}
+	if len(got) != 1 || got[0] != "user-1" {
+		t.Fatalf("OnLock calls = %v, want exactly one for user-1", got)
+	}
+	// An unlock is not a lock.
+	if err := c.handle(ctx, body(t, msgAt(TypeUnlocked, "r1", 1))); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("OnLock fired on unlock: %v", got)
+	}
+	// A new request locks again.
+	if err := c.handle(ctx, body(t, msgAt(TypeLocked, "r2", 2))); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("OnLock calls = %v, want a second one for the new lock", got)
+	}
+}
+
+// The synthetic lock before an erase fires the hook when the user.locked was
+// lost; an erase after a delivered lock does not fire it again.
+func TestConsumer_OnLockFiresForTheSyntheticLockOfAnErase(t *testing.T) {
+	ctx := context.Background()
+	c, _, _ := newTestConsumer(t, "wallet", &purgeRecorder{ack: Ack{Result: ResultDone}})
+	calls := 0
+	c.OnLock(func(context.Context, string) { calls++ })
+	if err := c.handle(ctx, body(t, msgAt(TypeErase, "r1", 0))); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnLock calls = %d, want 1 for the synthetic lock", calls)
+	}
+
+	c2, _, _ := newTestConsumer(t, "wallet", &purgeRecorder{ack: Ack{Result: ResultDone}})
+	calls = 0
+	c2.OnLock(func(context.Context, string) { calls++ })
+	_ = c2.handle(ctx, body(t, msgAt(TypeLocked, "r1", 0)))
+	if err := c2.handle(ctx, body(t, msgAt(TypeErase, "r1", 1))); err != nil {
+		t.Fatalf("erase after lock: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("OnLock calls = %d, want 1 (the erase must not fire it again)", calls)
+	}
+}

@@ -120,6 +120,12 @@ Each participant service (wallet, dfe, billing, poker):
 `Message.Workspaces` (`{id, kind}`, additive since v1.19.0) is a superset of `Organizations`; use `m.WorkspaceIDs()` for the
 ids and `m.KindOf(id)` for the kind (an id only in `Organizations` is an organization).
 
+`Consumer.OnLock(fn)` (v1.20.0) calls `fn(ctx, sub)` when the consumer moves a sub to locked: on `user.locked`, or on the
+synthetic lock before a `user.erase`. It does not fire for a redelivery, a stale message, or an erase after a delivered
+lock. Use it to cut what is already open (websockets) on the replica that received the message and fan the cut out to the
+others; it has no error return, so keep the connect-time `Store.Blocked` check as the safety net. `Store.ApplyChanged` is
+`Apply` plus "did the state change".
+
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
 ### JWT revocation
