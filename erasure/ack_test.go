@@ -53,7 +53,7 @@ func newAckServer(t *testing.T) *ackServer {
 }
 
 func (a *ackServer) client() *AckClient {
-	tm := oauth2client.New(a.srv.Client(), nil, a.srv.URL+"/token", "dfe", "secret", "account:erasure:ack")
+	tm := oauth2client.New(a.srv.Client(), nil, a.srv.URL+"/token", "dfe", "secret", "internal:account:erasure-ack")
 	return NewAckClient(a.srv.Client(), a.srv.URL+"/ack", tm)
 }
 

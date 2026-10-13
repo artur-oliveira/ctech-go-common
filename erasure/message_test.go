@@ -52,13 +52,19 @@ func TestDecode_SNSEnvelope(t *testing.T) {
 
 func TestDecode_RejectsInvalid(t *testing.T) {
 	cases := map[string]func(m *Message){
-		"version":           func(m *Message) { m.Version = 2 },
-		"type":              func(m *Message) { m.Type = "user.deleted" },
-		"request_id":        func(m *Message) { m.RequestID = "" },
-		"sub":               func(m *Message) { m.Sub = "" },
-		"scope":             func(m *Message) { m.Scope = "tenant" },
-		"services":          func(m *Message) { m.Services = nil },
-		"issued_at":         func(m *Message) { m.IssuedAt = time.Time{} },
+		"version":              func(m *Message) { m.Version = 2 },
+		"type":                 func(m *Message) { m.Type = "user.deleted" },
+		"request_id":           func(m *Message) { m.RequestID = "" },
+		"sub":                  func(m *Message) { m.Sub = "" },
+		"scope":                func(m *Message) { m.Scope = "tenant" },
+		"services":             func(m *Message) { m.Services = nil },
+		"issued_at":            func(m *Message) { m.IssuedAt = time.Time{} },
+		"workspace without id": func(m *Message) { m.Workspaces = []Workspace{{Kind: WorkspaceKindPersonal}} },
+		"workspace bad kind":   func(m *Message) { m.Workspaces = []Workspace{{ID: "w-1", Kind: "team"}} },
+		"workspaces w/ service": func(m *Message) {
+			m.Scope = ScopeService
+			m.Workspaces = []Workspace{{ID: "w-1", Kind: WorkspaceKindPersonal}}
+		},
 		"orgs with service": func(m *Message) { m.Scope = ScopeService; m.Organizations = []string{"org-1"} },
 	}
 	for name, mutate := range cases {
@@ -94,5 +100,40 @@ func TestNewEligibility_EmptyBlockersIsEligibleArray(t *testing.T) {
 	e := NewEligibility(Blocker{Code: "wallet.balance_nonzero"})
 	if e.Eligible || len(e.Blockers) != 1 {
 		t.Fatalf("unexpected eligibility: %+v", e)
+	}
+}
+
+func TestWorkspaces_RoundTripAndLookup(t *testing.T) {
+	in := validMessage()
+	in.Organizations = []string{"org-1", "ws-2"}
+	in.Workspaces = []Workspace{{ID: "ws-2", Kind: WorkspaceKindPersonal}, {ID: "org-1", Kind: WorkspaceKindOrganization}, {ID: "ws-3", Kind: WorkspaceKindPersonal}}
+	raw, err := Encode(in)
+	if err != nil {
+		t.Fatalf("Encode: %v", err)
+	}
+	out, err := Decode(raw)
+	if err != nil {
+		t.Fatalf("Decode: %v", err)
+	}
+	if got := out.WorkspaceIDs(); len(got) != 3 {
+		t.Fatalf("WorkspaceIDs = %v, want the 3 distinct ids", got)
+	}
+	if k, ok := out.KindOf("ws-2"); !ok || k != WorkspaceKindPersonal {
+		t.Fatalf("KindOf(ws-2) = %q, %v", k, ok)
+	}
+	if _, ok := out.KindOf("other"); ok {
+		t.Fatal("KindOf must not claim a workspace that is not erased")
+	}
+}
+
+// A publisher that predates Workspaces sends only Organizations.
+func TestKindOf_LegacyOrganizationsOnly(t *testing.T) {
+	m := validMessage()
+	m.Organizations = []string{"org-1"}
+	if k, ok := m.KindOf("org-1"); !ok || k != WorkspaceKindOrganization {
+		t.Fatalf("KindOf(org-1) = %q, %v; want organization", k, ok)
+	}
+	if ids := m.WorkspaceIDs(); len(ids) != 1 || ids[0] != "org-1" {
+		t.Fatalf("WorkspaceIDs = %v", ids)
 	}
 }

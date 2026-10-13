@@ -11,7 +11,7 @@ import (
 )
 
 // PurgeFunc erases/anonymizes the service's data for m.Sub (and every org in
-// m.Organizations) per the data-inventory spec. It must be idempotent and
+// m.WorkspaceIDs()) per the data-inventory spec. It must be idempotent and
 // resumable, re-check eligibility first, and return Result done or blocked.
 type PurgeFunc func(ctx context.Context, m Message) (Ack, error)
 
@@ -117,7 +117,7 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	}
 	switch ack.Result {
 	case ResultDone:
-		for _, org := range m.Organizations {
+		for _, org := range m.WorkspaceIDs() {
 			if _, err := c.store.Apply(ctx, OrgKey(org), m); err != nil {
 				return err
 			}

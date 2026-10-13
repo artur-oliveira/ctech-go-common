@@ -108,14 +108,17 @@ Each participant service (wallet, dfe, billing, poker):
 
 1. Creates a `{prefix}_erasure_state` DynamoDB table (partition key `pk` String, TTL attribute `ttl`)
    and an SQS queue + DLQ subscribed to ctech-account's `{env}-account-user-erasure` SNS topic
-   (filter policy on `services`, scope `MessageBody`; raw delivery recommended, the envelope is also accepted).
+   (filter policy on `services`, scope `MessageAttributes`, the `services` message attribute; raw delivery recommended, the envelope is also accepted).
    Queue visibility timeout ≥ 2× the slowest purge.
 2. Builds `erasure.NewStore(dynamoClient, tablePrefix, retention)` and calls `store.Blocked(ctx, sub)` on
    every user write path (refuse when true), and `store.OrgErased` on org-scoped async work.
 3. Implements a `PurgeFunc` (idempotent, resumable, re-checks eligibility, returns `done`/`blocked`) and
    runs `erasure.NewConsumer(sqsClient, queueURL, "<service>", store, purge, erasure.NewAckClient(...)).Run(ctx)`
-   in a background goroutine. The ack client uses an `oauth2client.TokenManager` with scope `account:erasure:ack`.
+   in a background goroutine. The ack client uses an `oauth2client.TokenManager` with scope `internal:account:erasure-ack`.
 4. Serves `GET /internal/erasure/eligibility/{sub}` returning `erasure.NewEligibility(blockers...)`.
+
+`Message.Workspaces` (`{id, kind}`, additive since v1.19.0) is a superset of `Organizations`; use `m.WorkspaceIDs()` for the
+ids and `m.KindOf(id)` for the kind (an id only in `Organizations` is an organization).
 
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
