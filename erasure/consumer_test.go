@@ -319,3 +319,15 @@ func TestConsumer_OnLockFiresForTheSyntheticLockOfAnErase(t *testing.T) {
 		t.Fatalf("OnLock calls = %d, want 1 (the erase must not fire it again)", calls)
 	}
 }
+
+func TestConsumer_OnLockPanicIsContained(t *testing.T) {
+	ctx := context.Background()
+	c, store, _ := newTestConsumer(t, "wallet", &purgeRecorder{})
+	c.OnLock(func(context.Context, string) { panic("boom") })
+	if err := c.handle(ctx, body(t, msgAt(TypeLocked, "r1", 0))); err != nil {
+		t.Fatalf("a panicking hook must not fail the message: %v", err)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); !blocked {
+		t.Fatal("the lock must be persisted regardless of the hook")
+	}
+}
