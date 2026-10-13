@@ -40,17 +40,26 @@ func NewConsumer(sqsClient sqsAPI, queueURL, service string, store *Store, purge
 // called for a redelivery or a stale message (the state did not change). A
 // service uses it to cut what is already open (websockets) on the instance that
 // got the message; fan-out to the other instances is the service's job. The
-// hook has no error return: a failure cannot redeliver the message, so the
-// connect-time Store.Blocked check remains the safety net.
+// hook has no error return and a panic in it is recovered and logged: a
+// failure cannot redeliver the message, so the connect-time Store.Blocked check
+// remains the safety net.
 func (c *Consumer) OnLock(fn func(ctx context.Context, sub string)) *Consumer {
 	c.onLock = fn
 	return c
 }
 
 func (c *Consumer) locked(ctx context.Context, sub string, rec Record, changed bool) {
-	if changed && rec.State == StateLocked && c.onLock != nil {
-		c.onLock(ctx, sub)
+	if !changed || rec.State != StateLocked || c.onLock == nil {
+		return
 	}
+	// The lock is already persisted: a panicking hook must neither crash the
+	// consumer loop nor lose the message.
+	defer func() {
+		if p := recover(); p != nil {
+			slog.ErrorContext(ctx, "erasure: OnLock hook panicked", "service", c.service, "panic", fmt.Sprint(p))
+		}
+	}()
+	c.onLock(ctx, sub)
 }
 
 // Run long-polls until ctx is cancelled. A message is deleted only after it was
