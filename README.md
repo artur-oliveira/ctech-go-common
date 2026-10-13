@@ -108,14 +108,17 @@ Each participant service (wallet, dfe, billing, poker):
 
 1. Creates a `{prefix}_erasure_state` DynamoDB table (partition key `pk` String, TTL attribute `ttl`)
    and an SQS queue + DLQ subscribed to ctech-account's `{env}-account-user-erasure` SNS topic
-   (filter policy on `services`, scope `MessageBody`; raw delivery recommended, the envelope is also accepted).
+   (filter policy on `services`, scope `MessageAttributes`, the `services` message attribute; raw delivery recommended, the envelope is also accepted).
    Queue visibility timeout ≥ 2× the slowest purge.
 2. Builds `erasure.NewStore(dynamoClient, tablePrefix, retention)` and calls `store.Blocked(ctx, sub)` on
    every user write path (refuse when true), and `store.OrgErased` on org-scoped async work.
 3. Implements a `PurgeFunc` (idempotent, resumable, re-checks eligibility, returns `done`/`blocked`) and
    runs `erasure.NewConsumer(sqsClient, queueURL, "<service>", store, purge, erasure.NewAckClient(...)).Run(ctx)`
-   in a background goroutine. The ack client uses an `oauth2client.TokenManager` with scope `account:erasure:ack`.
+   in a background goroutine. The ack client uses an `oauth2client.TokenManager` with scope `internal:account:erasure-ack`.
 4. Serves `GET /internal/erasure/eligibility/{sub}` returning `erasure.NewEligibility(blockers...)`.
+
+`Message.Workspaces` (`{id, kind}`, additive since v1.19.0) is a superset of `Organizations`; use `m.WorkspaceIDs()` for the
+ids and `m.KindOf(id)` for the kind (an id only in `Organizations` is an organization).
 
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
@@ -127,6 +130,28 @@ entries with `jwtverify.Revoke` / `jwtverify.Unrevoke`. The entries live in **Va
 billing DB 3) must pass a second `cache.RedisBackend` built on the base URL. `VerifyClaims` fails open if Valkey is
 unreachable; money-moving routes use `VerifyClaimsStrict`, which fails closed with `ErrRevocationUnavailable`.
 Services that verify tokens themselves (ctech-account) call `jwtverify.CheckRevoked(ctx, backend, sub, iat)` directly.
+
+### Rule: every new feature ships its erasure path
+
+ctech-account runs an LGPD deletion saga across the whole CTech family (specs and review in
+`ctech-account/docs/specs/2026-10-06-account-deletion-*.md` and `docs/2026-10-13-account-deletion-plan-review.md`).
+Every service is a participant. The participant plans were written once and went stale as features landed, so this is a rule:
+
+**A feature that stores or derives data tied to a person or an organization (a table, an index, a key prefix, a bucket
+prefix, a cache key, a queue or job row, a third-party registration, an audit field) is not done until its deletion
+flow exists and is tested.** In the same change:
+
+1. Add its row to the service's data inventory (erase, anonymize or retain, with legal basis and expiry; retention needs a
+   reason, not a convenience).
+2. Implement the erase or anonymize step in the service's purge, idempotent and resumable (re-runnable from scratch).
+3. Add or update the eligibility blockers if it can hold money, debt, open work or ownership.
+4. Make every async path (webhook, job, sweep, queue consumer) drop work for a locked or erased `sub` or organization.
+5. Test it: seed the new data, run the purge twice, assert it is gone or anonymized, and that a late write for an erased
+   subject is rejected. The purge's table-classification test must fail for an unclassified table; keep it exhaustive.
+6. Revoke or delete what lives at third parties (e.g. webhooks or credentials registered at a bank).
+7. Update the participant plan or spec, and note the cross-service impact (who else must act when this is erased).
+
+A pull request that adds person-linked data without this is incomplete, whatever else passes.
 
 ## Development
 

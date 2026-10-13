@@ -12,7 +12,7 @@ import (
 )
 
 // AckClient reports a finished user.erase to ctech-account with the service's
-// client_credentials token (scope account:erasure:ack).
+// client_credentials token (scope internal:account:erasure-ack).
 type AckClient struct {
 	http   *http.Client
 	url    string
