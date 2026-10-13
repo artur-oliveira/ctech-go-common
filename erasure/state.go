@@ -123,25 +123,37 @@ func (s *Store) Get(ctx context.Context, key string) (*Record, error) {
 // Apply moves the record at key according to m. Idempotent: redelivering the
 // same message is a no-op. Uses optimistic concurrency against other consumers.
 func (s *Store) Apply(ctx context.Context, key string, m Message) (Record, error) {
+	rec, _, err := s.ApplyChanged(ctx, key, m)
+	return rec, err
+}
+
+// ApplyChanged is Apply that also reports whether this call moved the record
+// to a different state (active, locked, erased). A no-op, a redelivery, a stale
+// message, or a newer lock on an already locked record reports false.
+func (s *Store) ApplyChanged(ctx context.Context, key string, m Message) (Record, bool, error) {
 	for range 3 {
 		cur, err := s.Get(ctx, key)
 		if err != nil {
-			return Record{}, err
+			return Record{}, false, err
 		}
 		next, changed := apply(cur, key, m, s.now(), s.erasedTTL)
 		if !changed {
-			return next, nil
+			return next, false, nil
 		}
 		err = s.put(ctx, next, cur)
 		if dynamo.IsConditionFailed(err) {
 			continue
 		}
 		if err != nil {
-			return Record{}, fmt.Errorf("erasure: put %s: %w", key, err)
+			return Record{}, false, fmt.Errorf("erasure: put %s: %w", key, err)
 		}
-		return next, nil
+		prevState := StateActive
+		if cur != nil {
+			prevState = cur.State
+		}
+		return next, next.State != prevState, nil
 	}
-	return Record{}, ErrConcurrentUpdate
+	return Record{}, false, ErrConcurrentUpdate
 }
 
 func (s *Store) put(ctx context.Context, next Record, cur *Record) error {
