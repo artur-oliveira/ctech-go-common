@@ -38,6 +38,15 @@ type Capability string
 const (
 	CapabilityStatement  Capability = "statement"
 	CapabilityCollection Capability = "collection"
+
+	// The products a provider may offer beyond statement and due-date Pix
+	// collection. A connection reports the ones its credentials allow; nothing
+	// requires them, and a token for one carries that product's scopes only.
+	CapabilityImmediateCharge Capability = "immediate_charge" // immediate Pix charges and QR payload locations
+	CapabilityDueBatch        Capability = "due_batch"        // batches of due-date Pix charges
+	CapabilityBoleto          Capability = "boleto"           // boleto with Pix (Cobrança v3)
+	CapabilityRecurring       Capability = "recurring"        // Pix Automático
+	CapabilityPayout          Capability = "payout"           // Pix payouts and their payment notices
 )
 
 // Product is the webhook path segment and the callback parser selector.

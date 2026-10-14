@@ -35,6 +35,11 @@ func scopesFor(set byok.Capability) []string {
 	if set == byok.CapabilityCollection {
 		return ScopesCollection
 	}
+	for _, o := range optionalProducts {
+		if o.capability == set {
+			return o.scopes
+		}
+	}
 	return ScopesStatement
 }
 
@@ -49,17 +54,29 @@ func (p *Provider) Connect(ctx context.Context, c byok.Credentials) (byok.Connec
 	if err != nil {
 		return byok.Connected{}, err
 	}
-	asked := append(slices.Clone(ScopesStatement), ScopesCollection...)
-	tok, err := p.c.FetchToken(ctx, cr, asked)
-	if err != nil {
-		// D23: a statement-only integration is accepted. Only a refusal of the
-		// scope set falls back: a transient failure (5xx, timeout, rate limit)
-		// must not store a fully-scoped integration as statement-only.
-		if !errors.Is(err, byok.ErrCredentialsRefused) && !errors.Is(err, byok.ErrScopesRefused) && !errors.Is(err, byok.ErrInvalidRequest) {
-			return byok.Connected{}, err
+	// Everything the integration may be used for in one request; Inter refuses the
+	// whole request when one scope is not ticked, so a refusal steps down: first
+	// to statement + collection (the original five activities), then to statement
+	// only (D23). Only a refusal steps down: a transient failure (5xx, timeout,
+	// rate limit) must not store a fully-scoped integration as a smaller one.
+	// This token is used for the balance check below and thrown away; every real
+	// call gets a token of its own product's scopes (Token).
+	everything := append(slices.Clone(ScopesStatement), ScopesCollection...)
+	for _, o := range optionalProducts {
+		everything = append(everything, o.scopes...)
+	}
+	ladder := [][]string{everything,
+		append(slices.Clone(ScopesStatement), ScopesCollection...), ScopesStatement}
+	var (
+		tok   byok.Token
+		asked []string
+	)
+	for i, rung := range ladder {
+		asked = rung
+		if tok, err = p.c.FetchToken(ctx, cr, asked); err == nil {
+			break
 		}
-		asked = ScopesStatement
-		if tok, err = p.c.FetchToken(ctx, cr, asked); err != nil {
+		if i == len(ladder)-1 || (!errors.Is(err, byok.ErrCredentialsRefused) && !errors.Is(err, byok.ErrScopesRefused) && !errors.Is(err, byok.ErrInvalidRequest)) {
 			return byok.Connected{}, err
 		}
 	}
@@ -78,6 +95,11 @@ func (p *Provider) Connect(ctx context.Context, c byok.Credentials) (byok.Connec
 	}
 	if len(out.MissingScopes) == 0 {
 		out.Capabilities = append(out.Capabilities, byok.CapabilityCollection)
+	}
+	for _, o := range optionalProducts {
+		if !slices.ContainsFunc(o.scopes, func(sc string) bool { return !slices.Contains(granted, sc) }) {
+			out.Capabilities = append(out.Capabilities, o.capability)
+		}
 	}
 	if !slices.Contains(out.Capabilities, byok.CapabilityStatement) {
 		return byok.Connected{}, fmt.Errorf("%w: extrato.read is required", byok.ErrScopesRefused)

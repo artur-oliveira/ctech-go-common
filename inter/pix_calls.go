@@ -98,7 +98,7 @@ func (c *Client) ListCallbacks(ctx context.Context, cr Credentials, bearer strin
 	var all []pix.CallbackRecord
 	for page := 0; ; page++ {
 		q := url.Values{"dataHoraInicio": {from.UTC().Format(time.RFC3339)}, "dataHoraFim": {to.UTC().Format(time.RFC3339)},
-			"pagina": {fmt.Sprint(page)}, "tamanhoPagina": {"100"}}
+			"pagina": {fmt.Sprint(page)}, "tamanhoPagina": {"50"}} // Inter: [10..50]
 		if err := c.Do(ctx, cr, bearer, http.MethodGet, pathCallbacks, q, nil, &out); err != nil {
 			return nil, err
 		}
