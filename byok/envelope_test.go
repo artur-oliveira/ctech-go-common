@@ -10,7 +10,7 @@ func TestEveryOpHasExactlyOneGroup(t *testing.T) {
 		OpCancelCharge: GroupTeardown, OpDeleteWebhook: GroupTeardown,
 		OpCreateDueCharge: GroupCollect, OpUpdateCharge: GroupCollect, OpRefund: GroupCollect, OpRegisterWebhook: GroupCollect,
 		OpSimulatePayment: GroupSandbox,
-		OpGetPayout: GroupRead, OpPayout: GroupPayout, // money out is a class of its own
+		OpGetPayout:       GroupRead, OpPayout: GroupPayout, // money out is a class of its own
 	}
 	if len(want) != len(AllOps) {
 		t.Fatalf("AllOps has %d ops, the table %d", len(AllOps), len(want))
