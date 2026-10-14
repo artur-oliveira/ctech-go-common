@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -39,7 +40,8 @@ func TestConnectWithEveryScopeIsCollectionCapable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(got.Capabilities) != 2 || got.Balance.Available != 1025 || got.CertFingerprint == "" {
+	if !slices.Contains(got.Capabilities, byok.CapabilityStatement) || !slices.Contains(got.Capabilities, byok.CapabilityCollection) ||
+		got.Balance.Available != 1025 || got.CertFingerprint == "" {
 		t.Fatalf("%+v", got)
 	}
 }

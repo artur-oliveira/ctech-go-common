@@ -14,6 +14,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -27,10 +28,56 @@ const (
 	pathToken     = "/oauth/v2/token"
 )
 
+// Inter's OAuth scopes by product (API reference read 2026-10-14). Statement
+// and collection are what billing uses today and what a connection must have;
+// the others are asked for together at connect time so a connection reports what
+// it can do, and each product's token carries its own scopes only. A scope Inter
+// documents belongs to exactly one set (TestEveryDocumentedScopeBelongsToOneSet).
 var (
 	ScopesStatement  = []string{"extrato.read"}
 	ScopesCollection = []string{"cobv.read", "cobv.write", "pix.read", "pix.write", "webhook.read", "webhook.write"}
+
+	// ScopesImmediateCharge: immediate charges (cob) and the dynamic-QR payload locations.
+	ScopesImmediateCharge = []string{"cob.read", "cob.write", "payloadlocation.read", "payloadlocation.write"}
+	// ScopesDueBatch: batches of due-date charges (lotecobv).
+	ScopesDueBatch = []string{"lotecobv.read", "lotecobv.write"}
+	// ScopesBoleto: Cobrança v3, boleto with Pix, and its webhook.
+	ScopesBoleto = []string{"boleto-cobranca.read", "boleto-cobranca.write"}
+	// ScopesRecurring: Pix Automático, its payload locations and its two webhooks.
+	ScopesRecurring = []string{"rec.read", "rec.write", "solicrec.read", "solicrec.write", "cobr.read", "cobr.write",
+		"payloadlocationrec.read", "payloadlocationrec.write", "webhookrec.read", "webhookrec.write",
+		"webhookcobr.read", "webhookcobr.write"}
+	// ScopesPayout: Pix payments out, and the banking webhook that reports them.
+	ScopesPayout = []string{"pagamento-pix.read", "pagamento-pix.write", "webhook-banking.read", "webhook-banking.write"}
+	// ScopesBankPayments: boleto, DARF and batch payments. Defined so the vocabulary
+	// is complete, never requested ambiently: a connection that needs them asks.
+	ScopesBankPayments = []string{"pagamento-boleto.read", "pagamento-boleto.write", "pagamento-darf.write",
+		"pagamento-lote.read", "pagamento-lote.write"}
 )
+
+// optionalProducts are the capabilities Connect detects beyond statement and
+// collection, in a fixed order.
+var optionalProducts = []struct {
+	capability byok.Capability
+	scopes     []string
+}{
+	{byok.CapabilityImmediateCharge, ScopesImmediateCharge},
+	{byok.CapabilityDueBatch, ScopesDueBatch},
+	{byok.CapabilityBoleto, ScopesBoleto},
+	{byok.CapabilityRecurring, ScopesRecurring},
+	{byok.CapabilityPayout, ScopesPayout},
+}
+
+// AllScopes is every scope Inter documents, sorted.
+func AllScopes() []string {
+	var all []string
+	for _, set := range [][]string{ScopesStatement, ScopesCollection, ScopesImmediateCharge, ScopesDueBatch, ScopesBoleto,
+		ScopesRecurring, ScopesPayout, ScopesBankPayments} {
+		all = append(all, set...)
+	}
+	slices.Sort(all)
+	return all
+}
 
 // Credentials are one integration's, for one call.
 type Credentials struct {

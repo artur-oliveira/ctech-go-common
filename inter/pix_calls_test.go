@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
 
@@ -91,5 +92,16 @@ func TestRetryCallbacksRefusesMoreThanFifty(t *testing.T) {
 	c, cr, _ := recorder(t, `{}`, 200)
 	if err := c.RetryCallbacks(context.Background(), cr, "b", make([]string, 51)); err == nil {
 		t.Fatal("51 txids accepted")
+	}
+}
+
+func TestCallbackListingAsksForNoMoreThanFiftyPerPage(t *testing.T) {
+	// Inter: tamanhoPagina is [10..50]; 100 answered 400 in production.
+	c, cr, calls := recorder(t, `{"data":[],"totalPaginas":1}`, 200)
+	if _, err := c.ListCallbacks(context.Background(), cr, "b", time.Now().Add(-time.Hour), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if q := (*calls)[0].query; !strings.Contains(q, "tamanhoPagina=50") {
+		t.Fatalf("query %q", q)
 	}
 }
