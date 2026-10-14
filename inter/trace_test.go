@@ -90,3 +90,27 @@ func TestNoLoggerMeansNoLog(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTraceDoesNotLogTheSecretsInsideAWebhookURL(t *testing.T) {
+	for name, hook := range map[string]string{
+		"query secret": "https://pix.example.com/pix/webhook?hmac=QUERY-SECRET&ignorar=",
+		"path secret":  "https://hooks.example.com/w/inter/hook1/PATH-SECRET/pix",
+	} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			c, cr := traceClient(t, &buf, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(`{"webhookUrl":"` + hook + `","chave":"key-1"}`))
+			})
+			if err := c.Do(context.Background(), cr, "BEARER-VALUE", "GET", "/pix/v2/webhook/key-1", nil, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			got := buf.String()
+			if strings.Contains(got, "QUERY-SECRET") || strings.Contains(got, "PATH-SECRET") {
+				t.Fatalf("a webhook secret reached the log: %s", got)
+			}
+			if !strings.Contains(got, "key-1") || !strings.Contains(got, "example.com") {
+				t.Fatalf("the key and the host should stay readable: %s", got)
+			}
+		})
+	}
+}
