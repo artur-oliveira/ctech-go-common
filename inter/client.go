@@ -11,6 +11,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -88,7 +89,8 @@ func WithTimeout(d time.Duration) Option  { return func(c *Client) { c.timeout =
 // warm process keeps its TLS sessions per integration and a renewal (a new
 // certificate) gets a new transport. Transports idle 30 min are dropped.
 type Client struct {
-	baseURL string // empty: chosen per call from Credentials.Sandbox
+	baseURL string       // empty: chosen per call from Credentials.Sandbox
+	log     *slog.Logger // nil: no response trace (WithLogger)
 	roots   *x509.CertPool
 	timeout time.Duration
 	mu      sync.Mutex
@@ -162,12 +164,14 @@ func (c *Client) FetchToken(ctx context.Context, cr Credentials, scopes []string
 		return byok.Token{}, err
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	started := time.Now()
 	resp, err := hc.Do(req)
 	if err != nil {
 		return byok.Token{}, fmt.Errorf("%w: token: %v", byok.ErrUnavailable, sanitize(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<16))
+	c.trace(cr, "", http.MethodPost, pathToken, resp.StatusCode, time.Since(started), raw)
 	if resp.StatusCode != http.StatusOK {
 		// Inter answers 400/401 to a wrong secret and to scopes the integration lacks.
 		if resp.StatusCode == http.StatusBadRequest || resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
@@ -215,12 +219,14 @@ func (c *Client) Do(ctx context.Context, cr Credentials, bearer, method, path st
 	if cr.Account != "" {
 		req.Header.Set("x-conta-corrente", cr.Account)
 	}
+	started := time.Now()
 	resp, err := hc.Do(req)
 	if err != nil {
 		return fmt.Errorf("%w: %s %s: %v", byok.ErrUnavailable, method, path, sanitize(err))
 	}
 	defer func() { _ = resp.Body.Close() }()
 	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	c.trace(cr, bearer, method, path, resp.StatusCode, time.Since(started), raw)
 	if resp.StatusCode < 200 || resp.StatusCode > 299 {
 		return statusErr(method, path, resp.StatusCode, raw)
 	}
