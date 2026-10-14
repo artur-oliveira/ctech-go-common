@@ -27,11 +27,13 @@ const (
 	OpListCallbacks   Op = "ListCallbacks"
 	OpRetryCallbacks  Op = "RetryCallbacks"
 	OpSimulatePayment Op = "SimulatePayment"
+	OpPayout          Op = "Payout"
+	OpGetPayout       Op = "GetPayout"
 )
 
 var AllOps = []Op{OpConnect, OpReseal, OpToken, OpBalance, OpStatementPage, OpCreateDueCharge, OpGetCharge,
 	OpUpdateCharge, OpCancelCharge, OpGetPayment, OpRefund, OpGetRefund, OpGetWebhook, OpRegisterWebhook,
-	OpDeleteWebhook, OpListCallbacks, OpRetryCallbacks, OpSimulatePayment}
+	OpDeleteWebhook, OpListCallbacks, OpRetryCallbacks, OpSimulatePayment, OpPayout, OpGetPayout}
 
 // OpGroup is the allowlist class of an op (spec § 4.1).
 type OpGroup string
@@ -41,12 +43,15 @@ const (
 	GroupTeardown OpGroup = "teardown"
 	GroupCollect  OpGroup = "collect"
 	GroupSandbox  OpGroup = "sandbox"
+	// GroupPayout is money leaving the account. It is its own class so the
+	// outbound Lambda can allow it for named organizations only.
+	GroupPayout OpGroup = "payout"
 )
 
 func GroupOf(op Op) OpGroup {
 	switch op {
 	case OpConnect, OpReseal, OpToken, OpBalance, OpStatementPage, OpGetCharge, OpGetPayment, OpGetRefund,
-		OpGetWebhook, OpListCallbacks, OpRetryCallbacks:
+		OpGetWebhook, OpListCallbacks, OpRetryCallbacks, OpGetPayout:
 		return GroupRead
 	case OpCancelCharge, OpDeleteWebhook:
 		return GroupTeardown
@@ -54,6 +59,8 @@ func GroupOf(op Op) OpGroup {
 		return GroupCollect
 	case OpSimulatePayment:
 		return GroupSandbox
+	case OpPayout:
+		return GroupPayout
 	}
 	return ""
 }

@@ -19,6 +19,7 @@ var (
 	ErrInvalidRequest     = errors.New("byok: invalid request")
 	ErrOpRefused          = errors.New("byok: operation refused by the gate")
 	ErrSandboxOnly        = errors.New("byok: sandbox-only operation")
+	ErrPixKeyNotFound     = errors.New("byok: destination Pix key not registered")
 )
 
 var codes = []struct {
@@ -30,7 +31,7 @@ var codes = []struct {
 	{"rate_limited", ErrRateLimited}, {"unavailable", ErrUnavailable},
 	{"certificate_expired", ErrCertificateExpired}, {"certificate_invalid", ErrCertificateInvalid},
 	{"key_mismatch", ErrKeyMismatch}, {"invalid_request", ErrInvalidRequest},
-	{"op_refused", ErrOpRefused}, {"sandbox_only", ErrSandboxOnly},
+	{"op_refused", ErrOpRefused}, {"sandbox_only", ErrSandboxOnly}, {"pix_key_not_found", ErrPixKeyNotFound},
 }
 
 // ErrorCode is the wire code of err; "internal" for anything unclassified.

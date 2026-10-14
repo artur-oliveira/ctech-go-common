@@ -10,6 +10,11 @@
 // products its credentials allow (byok.Capability*); a token for one product
 // carries that product's scopes only.
 //
+// Payouts: Provider implements byok.Payouts (POST /banking/v2/pix to a Pix key,
+// GET /banking/v2/pix/{codigoSolicitacao}); the idempotency id is a lowercase UUID
+// and the bank's own codigoSolicitacao is what a lookup uses. A received Pix line
+// of the statement carries its Payer (name, document, institution).
+//
 // WithLogger turns on a raw trace of every Inter response (status, duration,
 // body up to 8 KiB), with the integration's client_secret, the bearer and a token
 // response's access_token redacted. Off by default; errors still carry only

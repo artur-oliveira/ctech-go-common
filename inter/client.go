@@ -239,6 +239,11 @@ func (c *Client) FetchToken(ctx context.Context, cr Credentials, scopes []string
 
 // Do sends one API call with the bearer; x-conta-corrente when Account is set.
 func (c *Client) Do(ctx context.Context, cr Credentials, bearer, method, path string, query url.Values, body, out any) error {
+	return c.DoHeaders(ctx, cr, bearer, method, path, query, nil, body, out)
+}
+
+// DoHeaders is Do with extra request headers (the payment idempotency id).
+func (c *Client) DoHeaders(ctx context.Context, cr Credentials, bearer, method, path string, query url.Values, headers map[string]string, body, out any) error {
 	hc, err := c.httpFor(cr)
 	if err != nil {
 		return err
@@ -265,6 +270,9 @@ func (c *Client) Do(ctx context.Context, cr Credentials, bearer, method, path st
 	}
 	if cr.Account != "" {
 		req.Header.Set("x-conta-corrente", cr.Account)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
 	}
 	started := time.Now()
 	resp, err := hc.Do(req)
