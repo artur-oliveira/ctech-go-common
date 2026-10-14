@@ -115,3 +115,18 @@ func decodeBody(t *testing.T, r *http.Request) map[string]any {
 	_ = json.NewDecoder(r.Body).Decode(&m)
 	return m
 }
+
+// Observed on a live R$ 0,10 payout (2026-10-14): the payment shows ENVIADO
+// (sent, no end-to-end id yet) and later PAGO (with it). The history carries
+// the same steps as TRANSACAO_CRIADA, TRANSACAO_APROVADA, PIX_ENVIADO, PIX_PAGO.
+func TestPayoutStatusesObservedAtTheBank(t *testing.T) {
+	for raw, want := range map[string]byok.PayoutStatus{
+		"ENVIADO": byok.PayoutProcessing, "TRANSACAO_CRIADA": byok.PayoutProcessing, "TRANSACAO_APROVADA": byok.PayoutProcessing,
+		"PIX_ENVIADO": byok.PayoutProcessing, "PAGO": byok.PayoutDone, "PIX_PAGO": byok.PayoutDone,
+		"pago": byok.PayoutDone, " Enviado ": byok.PayoutProcessing, "ALGO_NOVO": byok.PayoutUnknown,
+	} {
+		if got := payoutStatus(raw); got != want {
+			t.Errorf("%q: %s, want %s", raw, got, want)
+		}
+	}
+}
