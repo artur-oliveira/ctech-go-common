@@ -134,3 +134,27 @@ func TestCallbackHistoryTakesTheTxidFromThePayload(t *testing.T) {
 		t.Fatalf("%+v", got)
 	}
 }
+
+func TestAReceivedPixLineCarriesItsPayer(t *testing.T) {
+	c, cr, _ := recorder(t, `{"totalPaginas":1,"transacoes":[`+
+		`{"idTransacao":"T1","dataTransacao":"2026-10-14","tipoOperacao":"C","valor":"0.10","titulo":"Pix recebido","descricao":"Fulano de Tal","detalhes":{"txId":"ctb01JABCDEFGHJKMNPQRSTVWXYZ","endToEndId":"E1","nomePagador":"Fulano de Tal","cpfCnpjPagador":"12345678909","nomeEmpresaPagador":"BANCO EXEMPLO"}},`+
+		`{"idTransacao":"T2","dataTransacao":"2026-10-14","tipoOperacao":"C","valor":"1.00","titulo":"Pix recebido","detalhes":{"endToEndId":"E2"}},`+
+		`{"idTransacao":"T3","dataTransacao":"2026-10-14","tipoOperacao":"D","valor":"2.00","titulo":"Pix enviado","detalhes":{"nomePagador":"C TECH","cpfCnpjPagador":"62787449000107"}}]}`, 200)
+	prov := NewProvider(c)
+	bc := byok.Credentials{Values: map[string]string{"client_id": "c", "client_secret": "s", "cert_pem": string(cr.CertPEM), "key_pem": string(cr.KeyPEM)}}
+	d, _ := byok.ParseDate("2026-10-14")
+	page, err := prov.StatementPage(context.Background(), bc, byok.Token{Value: "t"}, d, d, 0)
+	if err != nil || len(page.Lines) != 3 {
+		t.Fatalf("%+v %v", page, err)
+	}
+	want := byok.Payer{Name: "Fulano de Tal", Document: "12345678909", Institution: "BANCO EXEMPLO"}
+	if got := page.Lines[0].Payer; got == nil || *got != want {
+		t.Fatalf("payer = %+v, want %+v", got, want)
+	}
+	if page.Lines[1].Payer != nil {
+		t.Fatalf("a line without payer detail has no payer: %+v", page.Lines[1].Payer)
+	}
+	if page.Lines[2].Payer != nil {
+		t.Fatalf("on a debit the 'pagador' is CTech itself, never a payer: %+v", page.Lines[2].Payer)
+	}
+}

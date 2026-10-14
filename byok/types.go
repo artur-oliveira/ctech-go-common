@@ -187,6 +187,51 @@ type StatementLine struct {
 	Description string    `json:"description,omitempty"`
 	ChargeRef   string    `json:"charge_ref,omitempty"`
 	PaymentID   string    `json:"payment_id,omitempty"`
+	// Payer is who sent a received payment, when the bank's line says so. Nil on
+	// debits (the sender there is the account's own holder) and on lines that
+	// carry no payer detail.
+	Payer *Payer `json:"payer,omitempty"`
+}
+
+// Payer is the sender of a received payment, as the bank's statement names it.
+// The document is whole when the bank gives it whole; callers compare it digit
+// for digit and never assume it is masked or unmasked.
+type Payer struct {
+	Name        string `json:"name,omitempty"`
+	Document    string `json:"document,omitempty"`    // CPF or CNPJ
+	Institution string `json:"institution,omitempty"` // the payer's bank
+}
+
+// PayoutRequest is one payment out of the connected account to a Pix key.
+// Ref is an RFC 4122 UUID chosen by the caller and stored BEFORE the call: the
+// bank deduplicates on it, so repeating the request cannot pay twice.
+type PayoutRequest struct {
+	Ref     string `json:"ref"`
+	Amount  int64  `json:"amount"` // centavos
+	PixKey  string `json:"pix_key"`
+	Message string `json:"message,omitempty"`
+}
+
+// PayoutStatus is where a payout stands. Anything the bank says that a provider
+// does not recognise is PayoutUnknown, which a caller treats as "not settled
+// yet" and raises: it is never read as paid or as failed.
+type PayoutStatus string
+
+const (
+	PayoutProcessing PayoutStatus = "processing"
+	PayoutDone       PayoutStatus = "done"
+	PayoutFailed     PayoutStatus = "failed"
+	PayoutUnknown    PayoutStatus = "unknown"
+)
+
+// Payout is the bank's view of a payment out. ProviderRef is the bank's own id
+// for it (what a lookup uses); Ref is the caller's.
+type Payout struct {
+	Ref         string       `json:"ref,omitempty"`
+	ProviderRef string       `json:"provider_ref,omitempty"`
+	PaymentID   string       `json:"payment_id,omitempty"` // end-to-end id, once there is one
+	Status      PayoutStatus `json:"status"`
+	Reason      string       `json:"reason,omitempty"` // the bank's text when it refused
 }
 
 type StatementPage struct {

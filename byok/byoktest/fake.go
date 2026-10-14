@@ -17,6 +17,7 @@ type Fake struct {
 	PageSize     int
 	charges      map[string]*byok.Charge
 	refunds      map[string]byok.Refund
+	payouts      map[string]*byok.Payout // by the caller's Ref
 	lines        []byok.StatementLine
 	balance      byok.Balance
 	balanceAt    map[byok.Date]int64
@@ -33,6 +34,7 @@ func New() *Fake {
 		PageSize:     50,
 		charges:      map[string]*byok.Charge{},
 		refunds:      map[string]byok.Refund{},
+		payouts:      map[string]*byok.Payout{},
 		balanceAt:    map[byok.Date]int64{},
 		hooks:        map[byok.Product]string{},
 		failNext:     map[byok.Op]error{},
@@ -323,3 +325,47 @@ func (f *Fake) SimulatePayment(_ context.Context, c byok.Credentials, _ byok.Tok
 func (f *Fake) ParseCallback(_ byok.Product, headers map[string]string, body []byte) (byok.Callback, error) {
 	return byok.Callback{Account: headers["x-conta-corrente"], ChargeRefs: []string{string(body)}}, nil
 }
+
+// Payout records the payment, once per Ref: a repeated Ref returns the first
+// answer, like the bank's idempotency id.
+func (f *Fake) Payout(_ context.Context, _ byok.Credentials, _ byok.Token, in byok.PayoutRequest) (byok.Payout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.enter(byok.OpPayout); err != nil {
+		return byok.Payout{}, err
+	}
+	if p, ok := f.payouts[in.Ref]; ok {
+		return *p, nil
+	}
+	p := &byok.Payout{Ref: in.Ref, ProviderRef: "prov-" + in.Ref, Status: byok.PayoutProcessing}
+	f.payouts[in.Ref] = p
+	return *p, nil
+}
+
+func (f *Fake) GetPayout(_ context.Context, _ byok.Credentials, _ byok.Token, providerRef string) (byok.Payout, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err := f.enter(byok.OpGetPayout); err != nil {
+		return byok.Payout{}, err
+	}
+	for _, p := range f.payouts {
+		if p.ProviderRef == providerRef {
+			return *p, nil
+		}
+	}
+	return byok.Payout{}, byok.ErrNotFound
+}
+
+// SettlePayout moves a recorded payout to a final state, as the bank would.
+func (f *Fake) SettlePayout(ref string, status byok.PayoutStatus, paymentID, reason string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if p, ok := f.payouts[ref]; ok {
+		p.Status, p.PaymentID, p.Reason = status, paymentID, reason
+	}
+}
+
+// PayoutCalls is how many times Payout reached the "bank".
+func (f *Fake) PayoutCalls() int { f.mu.Lock(); defer f.mu.Unlock(); return f.calls[byok.OpPayout] }
+
+var _ byok.Payouts = (*Fake)(nil)

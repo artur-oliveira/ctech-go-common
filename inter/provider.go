@@ -301,8 +301,13 @@ func (p *Provider) StatementPage(ctx context.Context, c byok.Credentials, t byok
 		if aerr != nil || dir == "" || l.IDTransacao == "" {
 			continue
 		}
-		out.Lines = append(out.Lines, byok.StatementLine{ID: l.IDTransacao, Date: d, Direction: dir, Amount: amount,
-			Title: l.Titulo, Description: l.Descricao, ChargeRef: l.Detalhes.TxID, PaymentID: l.Detalhes.EndToEndID})
+		line := byok.StatementLine{ID: l.IDTransacao, Date: d, Direction: dir, Amount: amount,
+			Title: l.Titulo, Description: l.Descricao, ChargeRef: l.Detalhes.TxID, PaymentID: l.Detalhes.EndToEndID}
+		// Only a credit has a payer: on a debit the "pagador" is the account's own holder.
+		if dir == byok.Credit && (l.Detalhes.NomePagador != "" || l.Detalhes.CPFCNPJPagador != "") {
+			line.Payer = &byok.Payer{Name: l.Detalhes.NomePagador, Document: l.Detalhes.CPFCNPJPagador, Institution: l.Detalhes.NomeEmpresaPagador}
+		}
+		out.Lines = append(out.Lines, line)
 	}
 	return out, nil
 }
@@ -419,3 +424,5 @@ func (p *Provider) SimulatePayment(ctx context.Context, c byok.Credentials, t by
 	}
 	return p.c.PaySandboxCobv(ctx, cr, t.Value, ref)
 }
+
+func jsonNumber(s string) json.Number { return json.Number(s) }

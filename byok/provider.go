@@ -36,3 +36,15 @@ type Provider interface {
 	// ParseCallback runs with no credentials. Its output only wakes the caller.
 	ParseCallback(product Product, headers map[string]string, body []byte) (Callback, error)
 }
+
+// Payouts is the optional capability of a provider that can pay a Pix key
+// (CapabilityPayout). It is a separate interface so a provider that cannot,
+// or an integration not entitled to, never has to stub it.
+type Payouts interface {
+	// Payout asks the bank to pay. A nil error means the bank took the request,
+	// not that the money arrived: read the outcome with GetPayout.
+	Payout(ctx context.Context, c Credentials, t Token, in PayoutRequest) (Payout, error)
+	// GetPayout reads a payout by the bank's own id. ErrNotFound means the bank
+	// does not know it; the caller decides what that means.
+	GetPayout(ctx context.Context, c Credentials, t Token, providerRef string) (Payout, error)
+}
