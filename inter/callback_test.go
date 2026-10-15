@@ -52,3 +52,24 @@ func TestABodyThatNamesNoPayerYieldsNone(t *testing.T) {
 		t.Fatalf("%+v %v", got, err)
 	}
 }
+
+func TestAPayoutNoticeYieldsTheAccountAndWhateverPaymentIdsItNamesWhateverItsShape(t *testing.T) {
+	headers := map[string]string{"x-conta-corrente": "481572732"}
+	p := NewProvider(NewClient())
+	for name, body := range map[string]string{
+		"object":  `{"codigoSolicitacao":"abc-1","endToEndId":"E1","status":"PAGO"}`,
+		"list":    `[{"codigoSolicitacao":"abc-1"},{"endToEndId":"E1"}]`,
+		"unknown": `{"something":"else"}`,
+		"junk":    `not json`,
+		"empty":   ``,
+	} {
+		got, err := p.ParseCallback(byok.ProductPixPayment, headers, []byte(body))
+		if err != nil || got.Account != "481572732" || len(got.ChargeRefs) != 0 {
+			t.Fatalf("%s: %+v %v", name, got, err)
+		}
+	}
+	got, _ := p.ParseCallback(byok.ProductPixPayment, headers, []byte(`{"codigoSolicitacao":"abc-1","endToEndId":"E1"}`))
+	if len(got.PaymentIDs) != 2 || got.PaymentIDs[0] != "abc-1" || got.PaymentIDs[1] != "E1" {
+		t.Fatalf("%+v", got)
+	}
+}

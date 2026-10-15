@@ -54,6 +54,10 @@ type Product string
 
 const ProductPix Product = "pix"
 
+// ProductPixPayment is the Pix payments you send (payouts), as opposed to the
+// Pix you receive: its status changes arrive on a webhook of their own.
+const ProductPixPayment Product = "pix-pagamento"
+
 // Field is one credential the console asks for.
 type Field struct {
 	Name     string

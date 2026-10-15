@@ -105,3 +105,33 @@ func TestCallbackListingAsksForNoMoreThanFiftyPerPage(t *testing.T) {
 		t.Fatalf("query %q", q)
 	}
 }
+
+func TestThePayoutWebhookIsTheBankingOneAndNeedsNoPixKey(t *testing.T) {
+	c, cr, calls := recorder(t, `{"webhookUrl":"https://h/w"}`, 200)
+	got, err := c.GetPayoutWebhookURL(context.Background(), cr, "b")
+	if err != nil || got != "https://h/w" || (*calls)[0].method != "GET" || (*calls)[0].path != "/banking/v2/webhooks/pix-pagamento" {
+		t.Fatalf("%q %v %+v", got, err, *calls)
+	}
+	if err := c.PutPayoutWebhookURL(context.Background(), cr, "b", "https://h/new"); err != nil {
+		t.Fatal(err)
+	}
+	put := (*calls)[1]
+	if put.method != "PUT" || put.path != "/banking/v2/webhooks/pix-pagamento" || put.body["webhookUrl"] != "https://h/new" || put.account != "1234567" {
+		t.Fatalf("%+v", put)
+	}
+	if err := c.DeletePayoutWebhookURL(context.Background(), cr, "b"); err != nil || (*calls)[2].method != "DELETE" {
+		t.Fatalf("%v %+v", err, (*calls)[2])
+	}
+}
+
+func TestTheProviderRoutesAWebhookByProductAndRefusesOthers(t *testing.T) {
+	c, cr, calls := recorder(t, `{}`, 200)
+	_ = cr
+	p := NewProvider(c)
+	if err := p.RegisterWebhook(context.Background(), byok.Credentials{}, byok.Token{Value: "b"}, "boleto", "https://h"); err == nil {
+		t.Fatal("an unknown product is refused")
+	}
+	if len(*calls) != 0 {
+		t.Fatal("nothing was sent")
+	}
+}

@@ -334,35 +334,53 @@ func pixOnly(product byok.Product) error {
 	return nil
 }
 
+// webhookProduct accepts the two webhooks a connection can have: the Pix it
+// receives and the Pix payments it sends.
+func webhookProduct(product byok.Product) error {
+	if product != byok.ProductPix && product != byok.ProductPixPayment {
+		return fmt.Errorf("%w: product %q", byok.ErrInvalidRequest, product)
+	}
+	return nil
+}
+
 func (p *Provider) GetWebhook(ctx context.Context, c byok.Credentials, t byok.Token, product byok.Product) (string, error) {
-	if err := pixOnly(product); err != nil {
+	if err := webhookProduct(product); err != nil {
 		return "", err
 	}
 	cr, err := p.creds(c)
 	if err != nil {
 		return "", err
+	}
+	if product == byok.ProductPixPayment {
+		return p.c.GetPayoutWebhookURL(ctx, cr, t.Value)
 	}
 	return p.c.GetWebhookURL(ctx, cr, t.Value)
 }
 
 func (p *Provider) RegisterWebhook(ctx context.Context, c byok.Credentials, t byok.Token, product byok.Product, url string) error {
-	if err := pixOnly(product); err != nil {
+	if err := webhookProduct(product); err != nil {
 		return err
 	}
 	cr, err := p.creds(c)
 	if err != nil {
 		return err
+	}
+	if product == byok.ProductPixPayment {
+		return p.c.PutPayoutWebhookURL(ctx, cr, t.Value, url)
 	}
 	return p.c.PutWebhookURL(ctx, cr, t.Value, url)
 }
 
 func (p *Provider) DeleteWebhook(ctx context.Context, c byok.Credentials, t byok.Token, product byok.Product) error {
-	if err := pixOnly(product); err != nil {
+	if err := webhookProduct(product); err != nil {
 		return err
 	}
 	cr, err := p.creds(c)
 	if err != nil {
 		return err
+	}
+	if product == byok.ProductPixPayment {
+		return p.c.DeletePayoutWebhookURL(ctx, cr, t.Value)
 	}
 	return p.c.DeleteWebhookURL(ctx, cr, t.Value)
 }
