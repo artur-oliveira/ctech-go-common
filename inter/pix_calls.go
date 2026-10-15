@@ -13,13 +13,16 @@ import (
 )
 
 const (
-	pathCobv          = "/pix/v2/cobv/%s"
-	pathCobvPay       = "/pix/v2/cobv/pagar/%s"
-	pathDevolucao     = "/pix/v2/pix/%s/devolucao/%s"
-	pathWebhook       = "/pix/v2/webhook/%s"
-	pathCallbacks     = "/pix/v2/webhook/callbacks"
-	pathCallbackRetry = "/pix/v2/webhook/callbacks/retry"
-	maxRetryTxids     = 50
+	pathCobv      = "/pix/v2/cobv/%s"
+	pathCobvPay   = "/pix/v2/cobv/pagar/%s"
+	pathDevolucao = "/pix/v2/pix/%s/devolucao/%s"
+	pathWebhook   = "/pix/v2/webhook/%s"
+	// pathBankingWebhook is the Banking API's webhook of the payments you send
+	// (tipoWebhook pix-pagamento; scopes webhook-banking.read/write).
+	pathBankingWebhook = "/banking/v2/webhooks/pix-pagamento"
+	pathCallbacks      = "/pix/v2/webhook/callbacks"
+	pathCallbackRetry  = "/pix/v2/webhook/callbacks/retry"
+	maxRetryTxids      = 50
 )
 
 func (c *Client) PutCobv(ctx context.Context, cr Credentials, bearer, txid string, in pix.CobvRequest) (pix.Cobv, error) {
@@ -121,4 +124,30 @@ func (c *Client) PaySandboxCobv(ctx context.Context, cr Credentials, bearer, txi
 		return byok.ErrSandboxOnly
 	}
 	return c.Do(ctx, cr, bearer, http.MethodPost, fmt.Sprintf(pathCobvPay, txid), nil, map[string]string{}, nil)
+}
+
+// GetPayoutWebhookURL reads the webhook of outgoing Pix payments; empty when none.
+func (c *Client) GetPayoutWebhookURL(ctx context.Context, cr Credentials, bearer string) (string, error) {
+	var out struct {
+		WebhookURL string `json:"webhookUrl"`
+	}
+	err := c.Do(ctx, cr, bearer, http.MethodGet, pathBankingWebhook, nil, nil, &out)
+	if errors.Is(err, byok.ErrNotFound) {
+		return "", nil
+	}
+	return out.WebhookURL, err
+}
+
+// PutPayoutWebhookURL registers the webhook of outgoing Pix payments.
+func (c *Client) PutPayoutWebhookURL(ctx context.Context, cr Credentials, bearer, hook string) error {
+	return c.Do(ctx, cr, bearer, http.MethodPut, pathBankingWebhook, nil, map[string]string{"webhookUrl": hook}, nil)
+}
+
+// DeletePayoutWebhookURL removes it; none registered is not an error.
+func (c *Client) DeletePayoutWebhookURL(ctx context.Context, cr Credentials, bearer string) error {
+	err := c.Do(ctx, cr, bearer, http.MethodDelete, pathBankingWebhook, nil, nil, nil)
+	if errors.Is(err, byok.ErrNotFound) {
+		return nil
+	}
+	return err
 }
