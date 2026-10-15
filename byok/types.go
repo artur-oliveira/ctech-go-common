@@ -259,6 +259,20 @@ type Callback struct {
 	Account    string   `json:"account,omitempty"`
 	ChargeRefs []string `json:"charge_refs"`
 	PaymentIDs []string `json:"payment_ids,omitempty"`
+	// Payers is who the body says paid each charge, when it says. A claim, not a
+	// fact: a consumer may use it as provisional evidence of the payer (the
+	// document is usually masked) and must still settle from the charge re-query.
+	Payers []CallbackPayer `json:"payers,omitempty"`
+}
+
+// CallbackPayer is the payer a webhook names for one received payment.
+type CallbackPayer struct {
+	ChargeRef string `json:"charge_ref"`
+	PaymentID string `json:"payment_id,omitempty"`
+	Name      string `json:"name,omitempty"`
+	// Document is as sent: a CPF masked to some of its digits ("***137303**"), or
+	// complete if the bank ever sends it so.
+	Document string `json:"document,omitempty"`
 }
 
 func (d Date) MarshalJSON() ([]byte, error) {

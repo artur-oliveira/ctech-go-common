@@ -58,6 +58,16 @@ type Recebido struct {
 	Valor            string            `json:"valor"`
 	Horario          string            `json:"horario"`
 	ComponentesValor *ComponentesValor `json:"componentesValor,omitempty"`
+	// Pagador is who paid, as the webhook names them (observed live on
+	// 2026-10-15): the name in full and the CPF/CNPJ masked to its middle digits
+	// ("***137303**"). The charge query does not carry it.
+	Pagador *PagadorWebhook `json:"pagador,omitempty"`
+}
+
+// PagadorWebhook is the payer a Pix webhook names.
+type PagadorWebhook struct {
+	Nome    string `json:"nome"`
+	CpfCnpj string `json:"cpfCnpj"`
 }
 
 type Cobv struct {
