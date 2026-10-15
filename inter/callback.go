@@ -9,7 +9,8 @@ import (
 )
 
 // ParseCallback reads a Pix webhook body (Bacen: {"pix":[...]}) into
-// references only. Amounts, status and payer are deliberately dropped.
+// references and, when the body names one, the payer of each payment (a claim,
+// usually with a masked document). Amounts and status are deliberately dropped.
 func (p *Provider) ParseCallback(product byok.Product, headers map[string]string, body []byte) (byok.Callback, error) {
 	if err := pixOnly(product); err != nil {
 		return byok.Callback{}, err
@@ -31,6 +32,11 @@ func (p *Provider) ParseCallback(product byok.Product, headers map[string]string
 		out.ChargeRefs = append(out.ChargeRefs, r.Txid)
 		if r.EndToEndID != "" {
 			out.PaymentIDs = append(out.PaymentIDs, r.EndToEndID)
+		}
+		if r.Pagador != nil && (r.Pagador.Nome != "" || r.Pagador.CpfCnpj != "") {
+			out.Payers = append(out.Payers, byok.CallbackPayer{
+				ChargeRef: r.Txid, PaymentID: r.EndToEndID, Name: r.Pagador.Nome, Document: r.Pagador.CpfCnpj,
+			})
 		}
 	}
 	return out, nil
