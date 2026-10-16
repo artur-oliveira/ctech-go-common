@@ -98,19 +98,9 @@ func (t *TokenManager) Get(ctx context.Context) (string, error) {
 		"client_secret": {t.clientSecret},
 		"scope":         {t.scope},
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURL, strings.NewReader(form.Encode()))
+	raw, err := t.fetch(ctx, form)
 	if err != nil {
 		return "", err
-	}
-	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	resp, err := t.client.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer func() { _ = resp.Body.Close() }()
-	raw, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("oauth2client: token endpoint status %d: %s", resp.StatusCode, string(raw))
 	}
 	var tr struct {
 		AccessToken string `json:"access_token"`
@@ -127,4 +117,49 @@ func (t *TokenManager) Get(ctx context.Context) (string, error) {
 	}
 
 	return t.token, nil
+}
+
+// tokenAttempts is how many times a token is asked for when the endpoint is momentarily
+// unavailable (a load balancer with no backend for a few seconds, a connection reset): the
+// calls that need the token would otherwise fail outright for the length of the blip.
+const tokenAttempts = 3
+
+// retryDelay is the pause before attempt n+1; a variable so tests need not wait.
+var retryDelay = func(n int) time.Duration { return time.Duration(n) * 300 * time.Millisecond }
+
+// fetch posts the credentials, retrying a transient failure (a transport error, 429, 502,
+// 503, 504) and nothing else: a refusal of the credentials is never retried.
+func (t *TokenManager) fetch(ctx context.Context, form url.Values) ([]byte, error) {
+	var lastErr error
+	for attempt := 1; attempt <= tokenAttempts; attempt++ {
+		if attempt > 1 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(retryDelay(attempt - 1)):
+			}
+		}
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, t.tokenURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := t.client.Do(req)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		raw, _ := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		switch resp.StatusCode {
+		case http.StatusOK:
+			return raw, nil
+		case http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable, http.StatusGatewayTimeout:
+			lastErr = fmt.Errorf("oauth2client: token endpoint status %d: %s", resp.StatusCode, string(raw))
+			continue
+		default:
+			return nil, fmt.Errorf("oauth2client: token endpoint status %d: %s", resp.StatusCode, string(raw))
+		}
+	}
+	return nil, lastErr
 }

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	backend "gopkg.aoctech.app/api-commons/cache"
 )
@@ -76,5 +77,42 @@ func TestGetSharesTokenAcrossInstancesViaCacheBackend(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("token endpoint called %d times, want 1 (second instance should hit shared cache)", calls)
+	}
+}
+
+func TestAMomentaryOutageOfTheTokenEndpointIsRiddenOutButARefusalIsNot(t *testing.T) {
+	retryDelay = func(int) time.Duration { return time.Millisecond }
+	t.Cleanup(func() { retryDelay = func(n int) time.Duration { return time.Duration(n) * 300 * time.Millisecond } })
+
+	calls := 0
+	blip := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls < 3 {
+			w.WriteHeader(http.StatusServiceUnavailable) // "No backend server is currently available"
+			return
+		}
+		_, _ = w.Write([]byte(`{"access_token":"tok-2","expires_in":3600}`))
+	}))
+	defer blip.Close()
+	got, err := New(blip.Client(), nil, blip.URL, "id", "secret", "s").Get(t.Context())
+	if err != nil || got != "tok-2" || calls != 3 {
+		t.Fatalf("token=%q err=%v calls=%d: two 503s then a token must succeed", got, err, calls)
+	}
+
+	refused := 0
+	deny := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		refused++
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer deny.Close()
+	if _, err := New(deny.Client(), nil, deny.URL, "id", "bad", "s").Get(t.Context()); err == nil || refused != 1 {
+		t.Fatalf("a refused credential is asked once, got err=%v calls=%d", err, refused)
+	}
+
+	down := 0
+	dead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { down++; w.WriteHeader(http.StatusServiceUnavailable) }))
+	defer dead.Close()
+	if _, err := New(dead.Client(), nil, dead.URL, "id", "s", "s").Get(t.Context()); err == nil || down != tokenAttempts {
+		t.Fatalf("a long outage gives up after %d attempts, got err=%v calls=%d", tokenAttempts, err, down)
 	}
 }
