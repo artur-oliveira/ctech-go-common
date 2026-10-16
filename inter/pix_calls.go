@@ -14,7 +14,9 @@ import (
 
 const (
 	pathCobv      = "/pix/v2/cobv/%s"
+	pathCob       = "/pix/v2/cob/%s"
 	pathCobvPay   = "/pix/v2/cobv/pagar/%s"
+	pathCobPay    = "/pix/v2/cob/pagar/%s"
 	pathDevolucao = "/pix/v2/pix/%s/devolucao/%s"
 	pathWebhook   = "/pix/v2/webhook/%s"
 	// pathBankingWebhook is the Banking API's webhook of the payments you send
@@ -25,31 +27,47 @@ const (
 	maxRetryTxids      = 50
 )
 
+func payPath(txid string) string {
+	if byok.IsImmediateRef(txid) {
+		return fmt.Sprintf(pathCobPay, txid)
+	}
+	return fmt.Sprintf(pathCobvPay, txid)
+}
+
+// chargePath is where Inter keeps a charge: immediate charges (cob) and due-date ones (cobv)
+// are separate resources with the same shape, told apart by the reference's prefix.
+func chargePath(txid string) string {
+	if byok.IsImmediateRef(txid) {
+		return fmt.Sprintf(pathCob, txid)
+	}
+	return fmt.Sprintf(pathCobv, txid)
+}
+
 func (c *Client) PutCobv(ctx context.Context, cr Credentials, bearer, txid string, in pix.CobvRequest) (pix.Cobv, error) {
 	if !ValidTxid(txid) {
 		return pix.Cobv{}, fmt.Errorf("%w: txid", byok.ErrInvalidRequest)
 	}
 	var out pix.Cobv
-	err := c.Do(ctx, cr, bearer, http.MethodPut, fmt.Sprintf(pathCobv, txid), nil, in, &out)
+	err := c.Do(ctx, cr, bearer, http.MethodPut, chargePath(txid), nil, in, &out)
 	return out, err
 }
 
 func (c *Client) GetCobv(ctx context.Context, cr Credentials, bearer, txid string) (pix.Cobv, error) {
 	var out pix.Cobv
-	err := c.Do(ctx, cr, bearer, http.MethodGet, fmt.Sprintf(pathCobv, txid), nil, nil, &out)
+	err := c.Do(ctx, cr, bearer, http.MethodGet, chargePath(txid), nil, nil, &out)
 	return out, err
 }
 
 func (c *Client) PatchCobvAmount(ctx context.Context, cr Credentials, bearer, txid string, cents int64) (pix.Cobv, error) {
 	var out pix.Cobv
-	err := c.Do(ctx, cr, bearer, http.MethodPatch, fmt.Sprintf(pathCobv, txid), nil,
+	err := c.Do(ctx, cr, bearer, http.MethodPatch, chargePath(txid), nil,
 		map[string]any{"valor": map[string]string{"original": Reais(cents)}}, &out)
 	return out, err
 }
 
 // RemoveCobv sends the status alone, as Bacen requires.
 func (c *Client) RemoveCobv(ctx context.Context, cr Credentials, bearer, txid string) error {
-	return c.Do(ctx, cr, bearer, http.MethodPatch, fmt.Sprintf(pathCobv, txid), nil,
+	return c.Do(ctx, cr, bearer, http.MethodPatch, chargePath(txid), nil,
 		map[string]string{"status": pix.StatusRemovidaRecebedor}, nil)
 }
 
@@ -123,7 +141,7 @@ func (c *Client) PaySandboxCobv(ctx context.Context, cr Credentials, bearer, txi
 	if !cr.Sandbox {
 		return byok.ErrSandboxOnly
 	}
-	return c.Do(ctx, cr, bearer, http.MethodPost, fmt.Sprintf(pathCobvPay, txid), nil, map[string]string{}, nil)
+	return c.Do(ctx, cr, bearer, http.MethodPost, payPath(txid), nil, map[string]string{}, nil)
 }
 
 // GetPayoutWebhookURL reads the webhook of outgoing Pix payments; empty when none.

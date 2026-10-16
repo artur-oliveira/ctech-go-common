@@ -125,6 +125,21 @@ type DueCharge struct {
 	MonthlyInterestBasisPoints int    `json:"monthly_interest_bp,omitempty"`
 	Debtor                     Debtor `json:"debtor"`
 	Message                    string `json:"message,omitempty"`
+	// ExpiresInSeconds, when > 0, makes this an immediate charge (Inter: cob) that stops
+	// being payable that many seconds after it is created, instead of a due-date one. Due,
+	// ValidityDays, FineBasisPoints and MonthlyInterestBasisPoints are then ignored. Needs
+	// CapabilityImmediateCharge, and Ref must start with ImmediateRefPrefix.
+	ExpiresInSeconds int `json:"expires_in_s,omitempty"`
+}
+
+// ImmediateRefPrefix starts the reference of an immediate charge. A reference is all a later
+// GetCharge, UpdateCharge or CancelCharge is given, so it is what says which kind of charge
+// the provider is to look for.
+const ImmediateRefPrefix = "ctc"
+
+// IsImmediateRef reports whether ref names an immediate charge.
+func IsImmediateRef(ref string) bool {
+	return len(ref) > len(ImmediateRefPrefix) && ref[:len(ImmediateRefPrefix)] == ImmediateRefPrefix
 }
 
 type ChargeStatus string
