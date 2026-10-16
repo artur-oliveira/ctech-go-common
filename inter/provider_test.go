@@ -2,6 +2,7 @@ package inter
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net/http"
 	"slices"
@@ -156,5 +157,50 @@ func TestAReceivedPixLineCarriesItsPayer(t *testing.T) {
 	}
 	if page.Lines[2].Payer != nil {
 		t.Fatalf("on a debit the 'pagador' is CTech itself, never a payer: %+v", page.Lines[2].Payer)
+	}
+}
+
+func TestAnImmediateChargeIsACobThatExpiresInSecondsWithNoDueDate(t *testing.T) {
+	var path string
+	var body map[string]any
+	p := newPKI(t, time.Now().AddDate(1, 0, 0), http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/oauth/v2/token" {
+			_, _ = w.Write([]byte(`{"access_token":"t","expires_in":3600}`))
+			return
+		}
+		path = r.URL.Path
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		w.WriteHeader(201)
+		_, _ = w.Write([]byte(`{"txid":"ctc01JABCDEFGHJKMNPQRSTVWXYZ","status":"ATIVA","pixCopiaECola":"000201","valor":{"original":"10.00"}}`))
+	}))
+	prov := NewProvider(NewClient(WithBaseURL(p.server.URL), WithRootCAs(p.pool)))
+	creds := byok.Credentials{Values: map[string]string{"client_id": "c", "client_secret": "s", "cert_pem": string(p.clientCert),
+		"key_pem": string(p.clientKey), "pix_key": "evp"}, Account: "1"}
+	in := byok.DueCharge{Ref: "ctc01JABCDEFGHJKMNPQRSTVWXYZ", ExpiresInSeconds: 3600, Amount: 1000, FineBasisPoints: 200,
+		Debtor: byok.Debtor{Name: "Ana", TaxID: "12345678909"}, Message: "Pacote de 10.000 fichas"}
+
+	ch, err := prov.CreateDueCharge(context.Background(), creds, byok.Token{Value: "t"}, in)
+	if err != nil || ch.Payable != "000201" || ch.Status != byok.ChargeOpen {
+		t.Fatalf("%+v %v", ch, err)
+	}
+	if path != "/pix/v2/cob/ctc01JABCDEFGHJKMNPQRSTVWXYZ" {
+		t.Fatalf("created at %s", path)
+	}
+	cal := body["calendario"].(map[string]any)
+	if cal["expiracao"] != float64(3600) || cal["dataDeVencimento"] != nil || cal["validadeAposVencimento"] != nil {
+		t.Fatalf("calendario %+v", cal)
+	}
+	if body["solicitacaoPagador"] != "Pacote de 10.000 fichas" || body["valor"].(map[string]any)["multa"] != nil {
+		t.Fatalf("body %+v", body)
+	}
+
+	// The reference and the expiry must agree, or a later read would look in the wrong place.
+	for name, bad := range map[string]byok.DueCharge{
+		"expiry on a due-date reference":  {Ref: "ctb01JABCDEFGHJKMNPQRSTVWXYZ", ExpiresInSeconds: 60, Amount: 100, Debtor: in.Debtor},
+		"immediate reference without one": {Ref: "ctc01JABCDEFGHJKMNPQRSTVWXYZ", Amount: 100, Debtor: in.Debtor},
+	} {
+		if _, err := prov.CreateDueCharge(context.Background(), creds, byok.Token{Value: "t"}, bad); !errors.Is(err, byok.ErrInvalidRequest) {
+			t.Errorf("%s: %v", name, err)
+		}
 	}
 }

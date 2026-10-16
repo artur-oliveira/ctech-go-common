@@ -135,3 +135,21 @@ func TestTheProviderRoutesAWebhookByProductAndRefusesOthers(t *testing.T) {
 		t.Fatal("nothing was sent")
 	}
 }
+
+// An immediate charge (cob) and a due-date one (cobv) are separate resources: the reference's
+// prefix says which, for every call that is only given the reference.
+func TestEveryChargeCallFollowsTheReferenceToCobOrCobv(t *testing.T) {
+	c, cr, calls := recorder(t, `{"txid":"x","status":"ATIVA"}`, 200)
+	ctx := context.Background()
+	immediate, due := "ctc01JABCDEFGHJKMNPQRSTVWXYZ", "ctb01JABCDEFGHJKMNPQRSTVWXYZ"
+	for _, ref := range []string{immediate, due} {
+		_, _ = c.GetCobv(ctx, cr, "b", ref)
+		_ = c.RemoveCobv(ctx, cr, "b", ref)
+	}
+	want := []string{"/pix/v2/cob/" + immediate, "/pix/v2/cob/" + immediate, "/pix/v2/cobv/" + due, "/pix/v2/cobv/" + due}
+	for i, w := range want {
+		if (*calls)[i].path != w {
+			t.Errorf("call %d went to %s, want %s", i, (*calls)[i].path, w)
+		}
+	}
+}

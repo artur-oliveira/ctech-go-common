@@ -148,11 +148,19 @@ func (p *Provider) CreateDueCharge(ctx context.Context, c byok.Credentials, t by
 		Calendario: pix.Calendario{DataDeVencimento: in.Due.String(), ValidadeAposVencimento: max(in.ValidityDays, 1)},
 		Devedor:    dev, Valor: pix.Valor{Original: Reais(in.Amount)}, Chave: cr.PixKey, SolicitacaoPagador: in.Message,
 	}
-	if in.FineBasisPoints > 0 {
-		req.Valor.Multa = &pix.Modalidade{Modalidade: 2, ValorPerc: basisPoints(in.FineBasisPoints)}
+	if immediate := in.ExpiresInSeconds > 0; immediate != byok.IsImmediateRef(in.Ref) {
+		// The reference is what a later read is given to find the charge; the two must agree.
+		return byok.Charge{}, fmt.Errorf("%w: an immediate charge needs a reference starting %q and an expiry, and only it", byok.ErrInvalidRequest, byok.ImmediateRefPrefix)
 	}
-	if in.MonthlyInterestBasisPoints > 0 {
-		req.Valor.Juros = &pix.Modalidade{Modalidade: 3, ValorPerc: basisPoints(in.MonthlyInterestBasisPoints)}
+	if in.ExpiresInSeconds > 0 {
+		req.Calendario = pix.Calendario{Expiracao: in.ExpiresInSeconds}
+	} else {
+		if in.FineBasisPoints > 0 {
+			req.Valor.Multa = &pix.Modalidade{Modalidade: 2, ValorPerc: basisPoints(in.FineBasisPoints)}
+		}
+		if in.MonthlyInterestBasisPoints > 0 {
+			req.Valor.Juros = &pix.Modalidade{Modalidade: 3, ValorPerc: basisPoints(in.MonthlyInterestBasisPoints)}
+		}
 	}
 	got, err := p.c.PutCobv(ctx, cr, t.Value, in.Ref, req)
 	if err != nil {

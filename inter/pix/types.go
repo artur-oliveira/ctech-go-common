@@ -14,6 +14,8 @@ const (
 type Calendario struct {
 	DataDeVencimento       string `json:"dataDeVencimento,omitempty"`
 	ValidadeAposVencimento int    `json:"validadeAposVencimento,omitempty"`
+	// Expiracao is an immediate charge's lifetime in seconds (cob); the due-date fields above are cobv's.
+	Expiracao int `json:"expiracao,omitempty"`
 }
 
 type Devedor struct {
