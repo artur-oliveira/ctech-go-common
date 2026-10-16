@@ -16,6 +16,7 @@ type Fake struct {
 	Capabilities []byok.Capability
 	PageSize     int
 	charges      map[string]*byok.Charge
+	created      map[string]byok.DueCharge // what each charge was created from
 	refunds      map[string]byok.Refund
 	payouts      map[string]*byok.Payout // by the caller's Ref
 	lines        []byok.StatementLine
@@ -33,6 +34,7 @@ func New() *Fake {
 		Capabilities: []byok.Capability{byok.CapabilityStatement, byok.CapabilityCollection},
 		PageSize:     50,
 		charges:      map[string]*byok.Charge{},
+		created:      map[string]byok.DueCharge{},
 		refunds:      map[string]byok.Refund{},
 		payouts:      map[string]*byok.Payout{},
 		balanceAt:    map[byok.Date]int64{},
@@ -83,6 +85,14 @@ func (f *Fake) Pay(ref string, amount, late int64, at time.Time) {
 	ch.Status = byok.ChargePaid
 }
 
+// Created is what the charge under ref was created from: its message, expiry, due date.
+func (f *Fake) Created(ref string) (byok.DueCharge, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	in, ok := f.created[ref]
+	return in, ok
+}
+
 func (f *Fake) Charge(ref string) (byok.Charge, bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -129,6 +139,7 @@ func (f *Fake) CreateDueCharge(_ context.Context, _ byok.Credentials, _ byok.Tok
 	}
 	ch := &byok.Charge{Ref: in.Ref, Status: byok.ChargeOpen, Amount: in.Amount, Payable: "00020126FAKE" + in.Ref}
 	f.charges[in.Ref] = ch
+	f.created[in.Ref] = in
 	return *ch, nil
 }
 
