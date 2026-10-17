@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -438,5 +439,25 @@ func TestConsumer_StaleRelinkAfterANewerEraseIsIgnored(t *testing.T) {
 	}
 	if blocked, _ := store.Blocked(ctx, "user-1"); !blocked {
 		t.Fatal("a stale relink reopened a newer erasure")
+	}
+}
+
+func TestConsumerRoutesClaimedBodiesToTheExporter(t *testing.T) {
+	c := &Consumer{service: "poker"}
+	var seen string
+	c.WithExporter(func(_ context.Context, body []byte) (bool, error) {
+		if strings.Contains(string(body), "user.export") {
+			seen = string(body)
+			return true, nil
+		}
+		return false, nil
+	})
+	// An export body is claimed: no erasure decoding (it would fail validation) and no store access.
+	if err := c.handle(context.Background(), `{"type":"user.export"}`); err != nil || seen == "" {
+		t.Fatalf("err=%v seen=%q", err, seen)
+	}
+	// Anything else still goes down the erasure path, which rejects garbage.
+	if err := c.handle(context.Background(), `{"type":"nope"}`); err == nil {
+		t.Fatal("non-export body must still be decoded as erasure")
 	}
 }
