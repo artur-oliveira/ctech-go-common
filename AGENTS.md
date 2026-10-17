@@ -67,6 +67,10 @@ directly — that path is the backing repo and may move.
   `Store` (`Apply`, `Blocked`, `OrgErased`, `Clear`) over `{prefix}_erasure_state` `erasure/state.go`
   (pure transition `apply`: issued_at ordering, erased terminal); `Consumer` `erasure/consumer.go`
   (deletes a message only after purge + tombstone + ack); `AckClient` `erasure/ack.go`.
+- `dataexport` — personal-data export participant contract. `Message`/`Encode`/`Decode`/`IsExport`
+  `dataexport/message.go` (type `user.export`, shares the erasure queue); `Handler` + `PartFunc`
+  `dataexport/handler.go` (build part, PUT to the presigned url, ack; presigned URLs never logged);
+  `AckClient` `dataexport/ack.go`. Hook: `erasure.Consumer.WithExporter(handler.Handle)`.
 - `oauth2client` — cached `client_credentials` token fetcher. `TokenManager` `oauth2client/client.go:21`;
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
 - `accountorgs` — M2M client for ctech-account's `GET /v1.0/internal/organizations/{org}/members/{user}`

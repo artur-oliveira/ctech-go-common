@@ -27,8 +27,17 @@ type Consumer struct {
 	store    *Store
 	purge    PurgeFunc
 	acks     *AckClient
+	exporter func(ctx context.Context, body []byte) (handled bool, err error)
 	now      func() time.Time
 	onLock   func(ctx context.Context, sub string)
+}
+
+// WithExporter lets the consumer's queue also carry personal-data export
+// messages (dataexport.Handler.Handle): a body the exporter claims is never
+// decoded as an erasure message.
+func (c *Consumer) WithExporter(h func(ctx context.Context, body []byte) (bool, error)) *Consumer {
+	c.exporter = h
+	return c
 }
 
 func NewConsumer(sqsClient sqsAPI, queueURL, service string, store *Store, purge PurgeFunc, acks *AckClient) *Consumer {
@@ -108,6 +117,11 @@ func (c *Consumer) Run(ctx context.Context) error {
 }
 
 func (c *Consumer) handle(ctx context.Context, body string) error {
+	if c.exporter != nil {
+		if handled, err := c.exporter(ctx, []byte(body)); handled {
+			return err
+		}
+	}
 	m, err := Decode([]byte(body))
 	if err != nil {
 		return err
