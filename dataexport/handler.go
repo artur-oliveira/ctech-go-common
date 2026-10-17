@@ -80,7 +80,7 @@ func (h *Handler) Handle(ctx context.Context, body []byte) (handled bool, err er
 	if err := h.put(ctx, m.PutURL, data); err != nil {
 		return true, err
 	}
-	return true, h.acks.Send(ctx, Ack{RequestID: m.RequestID, Service: h.service, Result: ResultDone, Size: int64(len(data)), At: h.now().UTC()})
+	return true, h.acks.Send(ctx, Ack{RequestID: m.RequestID, Sub: m.Sub, Service: h.service, Result: ResultDone, Size: int64(len(data)), At: h.now().UTC()})
 }
 
 func (h *Handler) put(ctx context.Context, url string, data []byte) error {

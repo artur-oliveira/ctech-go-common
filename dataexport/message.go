@@ -112,6 +112,7 @@ const (
 // Ack is POSTed to ctech-account's /internal/export/ack after the upload.
 type Ack struct {
 	RequestID string    `json:"request_id"`
+	Sub       string    `json:"sub"` // lets account find the export row, which is keyed by person
 	Service   string    `json:"service"`
 	Result    Result    `json:"result"`
 	Size      int64     `json:"size,omitempty"`
