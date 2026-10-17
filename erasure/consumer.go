@@ -117,9 +117,10 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	}
 	key := SubKey(m.Sub)
 	if m.Type == TypeRelinked {
-		// The person came back to this service after leaving it. Clear is a
-		// no-op unless the record is erased, so a redelivery is harmless.
-		return c.store.Clear(ctx, m.Sub)
+		// The person came back to this service after leaving it. Relink is a
+		// no-op unless the record is erased, and ignores a relink older than the
+		// erasure it would reopen, so a redelivery is harmless.
+		return c.store.Relink(ctx, m.Sub, m.IssuedAt)
 	}
 	if m.Type != TypeErase {
 		rec, changed, err := c.store.ApplyChanged(ctx, key, m)

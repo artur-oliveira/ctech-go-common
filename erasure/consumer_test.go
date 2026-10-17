@@ -413,3 +413,30 @@ func TestConsumer_StaleEraseAfterRelinkIsAckedNotPurged(t *testing.T) {
 		t.Fatalf("acks = %+v, want the stale erase acked done", acks)
 	}
 }
+
+// A relink delivered late, after the person left again, must not reopen the
+// newer tombstone: relink is ordered by issued_at like lock/unlock.
+func TestConsumer_StaleRelinkAfterANewerEraseIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, _ := newTestConsumer(t, "wallet", p)
+	first := msgAt(TypeErase, "r1", 0)
+	first.Scope = ScopeService
+	old := body(t, relinkMsg(time.Hour))
+	for _, b := range []string{body(t, first), old} {
+		if err := c.handle(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second := msgAt(TypeErase, "r2", 2*time.Hour) // the person left again
+	second.Scope = ScopeService
+	if err := c.handle(ctx, body(t, second)); err != nil {
+		t.Fatalf("second erase: %v", err)
+	}
+	if err := c.handle(ctx, old); err != nil { // duplicate of the first relink
+		t.Fatalf("late relink: %v", err)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); !blocked {
+		t.Fatal("a stale relink reopened a newer erasure")
+	}
+}

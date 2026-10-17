@@ -214,3 +214,32 @@ func (s *Store) Clear(ctx context.Context, sub string) error {
 	}
 	return err
 }
+
+// Relink reactivates sub for a user.relinked message, ordered by its issued_at
+// like lock/unlock: a relink older than the erasure it would reopen (a late
+// duplicate delivered after the person left again) is ignored. Like Clear, the
+// record is not deleted and a record that is not erased is left alone.
+func (s *Store) Relink(ctx context.Context, sub string, issuedAt time.Time) error {
+	key := SubKey(sub)
+	cur, err := s.Get(ctx, key)
+	if err != nil || cur == nil || cur.State != StateErased {
+		return err
+	}
+	seq := issuedAt.UnixNano()
+	if seq <= cur.SeqNS {
+		return nil // stale: the erasure is newer than this relink
+	}
+	now := s.now()
+	err = s.put(ctx, Record{
+		PK:        key,
+		State:     StateActive,
+		RequestID: cur.RequestID, // proves which erase was already done
+		SeqNS:     seq,
+		UpdatedAt: now.UTC().Format(time.RFC3339),
+		TTL:       now.Add(activeMemory).Unix(),
+	}, cur)
+	if dynamo.IsConditionFailed(err) {
+		return ErrConcurrentUpdate
+	}
+	return err
+}

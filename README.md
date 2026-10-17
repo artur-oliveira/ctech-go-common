@@ -129,7 +129,7 @@ others; it has no error return, so keep the connect-time `Store.Blocked` check a
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
 `user.relinked` (`TypeRelinked`, v1.28.0) is sent by ctech-account when a person who left **one** service (`scope: service`)
-signs in to it again. It needs `Scope: service` and exactly one target service. The consumer calls `Store.Clear(sub)` and
+signs in to it again. It needs `Scope: service` and exactly one target service. The consumer calls `Store.Relink(sub, issued_at)` (ordered like lock/unlock, so a late duplicate after the person left again is ignored) and
 sends no ack; on a record that is not erased it is a no-op. **Bump to v1.28.0 before ctech-account enables relink for your
 service**: an older consumer rejects the unknown type and the message ends in the DLQ.
 
