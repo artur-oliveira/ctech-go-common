@@ -66,7 +66,7 @@ func TestHandleUploadsThePartAndAcks(t *testing.T) {
 	if string(got) != "zip-of-u1" || ctype != "application/zip" {
 		t.Fatalf("uploaded %q as %q", got, ctype)
 	}
-	if len(acks.acks) != 1 || acks.acks[0].Result != ResultDone || acks.acks[0].Size != 9 || acks.acks[0].RequestID != "r1" {
+	if len(acks.acks) != 1 || acks.acks[0].Result != ResultDone || acks.acks[0].Size != 9 || acks.acks[0].RequestID != "r1" || acks.acks[0].Sub != "u1" {
 		t.Fatalf("acks=%+v", acks.acks)
 	}
 }
