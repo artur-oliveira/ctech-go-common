@@ -331,3 +331,112 @@ func TestConsumer_OnLockPanicIsContained(t *testing.T) {
 		t.Fatal("the lock must be persisted regardless of the hook")
 	}
 }
+
+func relinkMsg(offset time.Duration) Message {
+	m := msgAt(TypeRelinked, "relink-1", offset)
+	m.Scope, m.Services = ScopeService, []string{"wallet"}
+	return m
+}
+
+func TestConsumer_RelinkedClearsAnErasedSub(t *testing.T) {
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, a := newTestConsumer(t, "wallet", p)
+	store.now = func() time.Time { return t0.Add(time.Hour) }
+	erase := msgAt(TypeErase, "r1", 0)
+	erase.Scope = ScopeService
+	if err := c.handle(ctx, body(t, erase)); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if err := c.handle(ctx, body(t, relinkMsg(time.Minute))); err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); blocked {
+		t.Fatal("a person who came back must not stay blocked")
+	}
+	if len(a.received()) != 1 {
+		t.Fatalf("acks = %+v; a relink owes no ack", a.received())
+	}
+}
+
+func TestConsumer_RelinkedOnAnActiveSubIsANoOp(t *testing.T) {
+	ctx := context.Background()
+	c, store, a := newTestConsumer(t, "wallet", &purgeRecorder{})
+	if err := c.handle(ctx, body(t, relinkMsg(0))); err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	if r, _ := store.Get(ctx, SubKey("user-1")); r != nil {
+		t.Fatalf("record = %+v, want none", r)
+	}
+	if len(a.received()) != 0 {
+		t.Fatal("no ack expected")
+	}
+}
+
+func TestConsumer_RelinkedForAnotherServiceIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	c, store, _ := newTestConsumer(t, "dfe", &purgeRecorder{ack: Ack{Result: ResultDone}})
+	store.now = func() time.Time { return t0.Add(time.Hour) }
+	erase := msgAt(TypeErase, "r1", 0)
+	if err := c.handle(ctx, body(t, erase)); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if err := c.handle(ctx, body(t, relinkMsg(time.Minute))); err != nil { // addressed to wallet
+		t.Fatalf("relink: %v", err)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); !blocked {
+		t.Fatal("dfe's tombstone must survive a relink addressed to wallet")
+	}
+}
+
+func TestConsumer_StaleEraseAfterRelinkIsAckedNotPurged(t *testing.T) {
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, a := newTestConsumer(t, "wallet", p)
+	store.now = func() time.Time { return t0.Add(time.Hour) }
+	erase := msgAt(TypeErase, "r1", 0)
+	erase.Scope = ScopeService
+	b := body(t, erase)
+	if err := c.handle(ctx, b); err != nil {
+		t.Fatalf("erase: %v", err)
+	}
+	if err := c.handle(ctx, body(t, relinkMsg(time.Minute))); err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+	if err := c.handle(ctx, b); err != nil { // late duplicate of the old erase
+		t.Fatalf("late erase: %v", err)
+	}
+	if p.calls != 1 {
+		t.Fatalf("purge calls = %d, want 1: the returning person's new data must survive", p.calls)
+	}
+	if acks := a.received(); len(acks) != 2 || acks[1].Result != ResultDone {
+		t.Fatalf("acks = %+v, want the stale erase acked done", acks)
+	}
+}
+
+// A relink delivered late, after the person left again, must not reopen the
+// newer tombstone: relink is ordered by issued_at like lock/unlock.
+func TestConsumer_StaleRelinkAfterANewerEraseIsIgnored(t *testing.T) {
+	ctx := context.Background()
+	p := &purgeRecorder{ack: Ack{Result: ResultDone}}
+	c, store, _ := newTestConsumer(t, "wallet", p)
+	first := msgAt(TypeErase, "r1", 0)
+	first.Scope = ScopeService
+	old := body(t, relinkMsg(time.Hour))
+	for _, b := range []string{body(t, first), old} {
+		if err := c.handle(ctx, b); err != nil {
+			t.Fatal(err)
+		}
+	}
+	second := msgAt(TypeErase, "r2", 2*time.Hour) // the person left again
+	second.Scope = ScopeService
+	if err := c.handle(ctx, body(t, second)); err != nil {
+		t.Fatalf("second erase: %v", err)
+	}
+	if err := c.handle(ctx, old); err != nil { // duplicate of the first relink
+		t.Fatalf("late relink: %v", err)
+	}
+	if blocked, _ := store.Blocked(ctx, "user-1"); !blocked {
+		t.Fatal("a stale relink reopened a newer erasure")
+	}
+}

@@ -21,6 +21,11 @@ const (
 	TypeLocked   Type = "user.locked"
 	TypeUnlocked Type = "user.unlocked"
 	TypeErase    Type = "user.erase"
+	// TypeRelinked tells one service that a person who left it (scope service)
+	// signed in to it again. The consumer reactivates their tombstone
+	// (Store.Clear); nothing is acked. It needs scope service and exactly one
+	// target service.
+	TypeRelinked Type = "user.relinked"
 )
 
 type Scope string
@@ -69,7 +74,7 @@ func (m Message) Validate() error {
 	switch {
 	case m.Version != Version:
 		problem = fmt.Sprintf("unsupported version %d", m.Version)
-	case m.Type != TypeLocked && m.Type != TypeUnlocked && m.Type != TypeErase:
+	case m.Type != TypeLocked && m.Type != TypeUnlocked && m.Type != TypeErase && m.Type != TypeRelinked:
 		problem = fmt.Sprintf("unknown type %q", m.Type)
 	case m.RequestID == "":
 		problem = "missing request_id"
@@ -79,6 +84,8 @@ func (m Message) Validate() error {
 		problem = fmt.Sprintf("unknown scope %q", m.Scope)
 	case len(m.Services) == 0:
 		problem = "no target services"
+	case m.Type == TypeRelinked && (m.Scope != ScopeService || len(m.Services) != 1):
+		problem = "relinked requires scope service and exactly one service"
 	case m.Scope == ScopeService && len(m.Organizations) > 0:
 		problem = "organizations require scope account"
 	case m.Scope == ScopeService && len(m.Workspaces) > 0:
