@@ -137,3 +137,24 @@ func TestKindOf_LegacyOrganizationsOnly(t *testing.T) {
 		t.Fatalf("WorkspaceIDs = %v", ids)
 	}
 }
+
+func TestRelinkedNeedsServiceScopeAndOneService(t *testing.T) {
+	relink := func(mutate func(m *Message)) error {
+		m := validMessage()
+		m.Type, m.Scope, m.Services = TypeRelinked, ScopeService, []string{"wallet"}
+		mutate(&m)
+		return m.Validate()
+	}
+	if err := relink(func(*Message) {}); err != nil {
+		t.Fatalf("a service-scoped relink for one service is valid: %v", err)
+	}
+	for name, mutate := range map[string]func(m *Message){
+		"account scope": func(m *Message) { m.Scope = ScopeAccount },
+		"two services":  func(m *Message) { m.Services = []string{"wallet", "dfe"} },
+		"workspaces":    func(m *Message) { m.Workspaces = []Workspace{{ID: "w-1", Kind: WorkspaceKindPersonal}} },
+	} {
+		if err := relink(mutate); !errors.Is(err, ErrInvalidMessage) {
+			t.Errorf("%s: err = %v, want ErrInvalidMessage", name, err)
+		}
+	}
+}
