@@ -44,6 +44,7 @@ func body(t *testing.T, m Message) []byte {
 func newHandler(part PartFunc, acks Acker) *Handler {
 	h := NewHandler("poker", part, http.DefaultClient, acks)
 	h.now = func() time.Time { return t0 }
+	h.allow = func(string) bool { return true } // httptest servers are plain http on 127.0.0.1
 	return h
 }
 
@@ -148,5 +149,37 @@ func TestMessageValidation(t *testing.T) {
 		if _, err := Encode(m); !errors.Is(err, ErrInvalidMessage) {
 			t.Errorf("%s: err=%v", name, err)
 		}
+	}
+}
+
+func TestHandleRefusesAPutURLOutsideHTTPSS3(t *testing.T) {
+	called := false
+	h := NewHandler("poker", func(context.Context, string) ([]byte, error) { called = true; return nil, nil }, http.DefaultClient, &fakeAcker{})
+	h.now = func() time.Time { return t0 }
+	for _, u := range []string{"http://b.s3.amazonaws.com/k", "https://evil.example/k", "https://amazonaws.com.evil.example/k", "https://169.254.169.254/k"} {
+		if handled, err := h.Handle(context.Background(), body(t, msg(u))); !handled || err != nil {
+			t.Fatalf("%s: handled=%v err=%v", u, handled, err)
+		}
+	}
+	if called {
+		t.Fatal("a part was built for a refused url")
+	}
+	if !allowedPutURL("https://b.s3.dualstack.us-east-1.amazonaws.com/exports/k?X-Amz-Signature=s") {
+		t.Fatal("dual-stack S3 url must be allowed")
+	}
+}
+
+func TestUploadDoesNotFollowRedirects(t *testing.T) {
+	evilHit := false
+	evil := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { evilHit = true }))
+	defer evil.Close()
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, evil.URL, http.StatusTemporaryRedirect)
+	}))
+	defer s3.Close()
+	h := newHandler(func(context.Context, string) ([]byte, error) { return []byte("z"), nil }, &fakeAcker{})
+	h.http = NewHandler("x", nil, http.DefaultClient, nil).http // the real client, redirects off
+	if _, err := h.Handle(context.Background(), body(t, msg(s3.URL))); err == nil || evilHit {
+		t.Fatalf("redirect must fail the upload and not be followed: err=%v hit=%v", err, evilHit)
 	}
 }

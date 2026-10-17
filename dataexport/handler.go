@@ -7,8 +7,18 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 	"time"
 )
+
+// allowedPutURL is defense in depth behind the queue policy (only the account
+// topic can publish): the part is personal data, so it only ever goes to
+// HTTPS S3, whatever a message says.
+func allowedPutURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && strings.HasSuffix(u.Hostname(), ".amazonaws.com")
+}
 
 // PartFunc builds the service's part for sub: a zip with JSON (and CSV) files
 // and a README (spec E3/E4). It must be idempotent: a redelivery builds again
@@ -28,11 +38,15 @@ type Handler struct {
 	part    PartFunc
 	http    *http.Client
 	acks    Acker
+	allow   func(string) bool
 	now     func() time.Time
 }
 
 func NewHandler(service string, part PartFunc, httpClient *http.Client, acks Acker) *Handler {
-	return &Handler{service: service, part: part, http: httpClient, acks: acks, now: time.Now}
+	// A presigned URL never needs a redirect; following one would send the part elsewhere.
+	c := *httpClient
+	c.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	return &Handler{service: service, part: part, http: &c, acks: acks, allow: allowedPutURL, now: time.Now}
 }
 
 // Handle processes a queue body when it is an export message. handled is false
@@ -52,6 +66,11 @@ func (h *Handler) Handle(ctx context.Context, body []byte) (handled bool, err er
 	if !m.ExpiresAt.After(h.now()) {
 		// The URL is dead; account notices the silence and republishes a fresh one.
 		slog.WarnContext(ctx, "dataexport: put url expired, dropping", "service", h.service, "request_id", m.RequestID)
+		return true, nil
+	}
+	if !h.allow(m.PutURL) {
+		// Never retried: redelivery cannot make a bad URL good.
+		slog.ErrorContext(ctx, "dataexport: refusing put url outside https S3", "service", h.service, "request_id", m.RequestID)
 		return true, nil
 	}
 	data, err := h.part(ctx, m.Sub)
