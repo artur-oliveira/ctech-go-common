@@ -25,6 +25,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"gopkg.aoctech.app/api-commons/cache"
+	"gopkg.aoctech.app/api-commons/resilient"
 	"gopkg.aoctech.app/api-commons/ttlcache"
 )
 
@@ -336,6 +337,11 @@ func (v *Verifier) fetchJWKS(ctx context.Context, force bool) ([]jwk, error) {
 	return keys, nil
 }
 
+// jwksHTTP fetches the identity provider's key set: pooled connections, and a circuit
+// that, while the provider is down, answers at once instead of making every caller
+// wait the full timeout (the verifier then serves the keys it already holds).
+var jwksHTTP = resilient.Client(5*time.Second, resilient.Config{})
+
 func fetchJWKSFromURL(ctx context.Context, jwksURL string) ([]jwk, error) {
 	httpCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
@@ -344,7 +350,7 @@ func fetchJWKSFromURL(ctx context.Context, jwksURL string) ([]jwk, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := jwksHTTP.Do(req)
 	if err != nil {
 		return nil, err
 	}

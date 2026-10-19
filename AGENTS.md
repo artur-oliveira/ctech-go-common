@@ -69,6 +69,11 @@ directly — that path is the backing repo and may move.
 - `deadline` — Fiber v3 middleware giving every request a time budget (`deadline.New(timeout, skip...)`): `c.Context()` is
   `context.Background()` otherwise, so DynamoDB/Valkey/HTTP calls outlive the client. WebSocket upgrades are never bounded; `skip`
   names other long routes. A propagated `context.DeadlineExceeded` becomes 504.
+- `resilient` — the HTTP client for calling another service: `resilient.Client(timeout, Config{})` is an `http.Client` over `NewTransport()`
+  (64 idle connections per host instead of net/http's 2, HTTP/2, bounded dial and TLS) with a per-host, in-process circuit breaker
+  (`Wrap`): 5 failures in a row (transport error, 502/503/504; not 4xx, 500 or the caller cancelling) open it for 10 s (doubling on a
+  failed probe, up to 60 s) and a call answers at once with `*OpenError` (`errors.Is(err, resilient.ErrCircuitOpen)`); then ONE probe
+  decides. Used by `jwtverify` (JWKS), `accountorgs`, `oauthclients`; `oauth2client` does not retry an open circuit.
 - `ttlcache` — small in-process TTL cache (`New[V](ttl, max)`, `Get`/`Set`/`Delete`) for answers re-read on every
   request; the TTL is the staleness the caller accepts. Used by `jwtverify` revocation and `erasure.Store.Blocked`.
 - `erasure` — LGPD account-deletion participant contract. `Store.Blocked` is remembered 10 s per user in process (`WithBlockedMemoryTTL`); a write through the same Store invalidates it. `Consumer.WithVisibilityHeartbeat(extend)` keeps the message being handled invisible while a long purge or export runs (every extend/3 it sets the visibility timeout to `extend`, up to 3 h; needs `sqs:ChangeMessageVisibility`; off by default). `Message`/`Encode`/`Decode` `erasure/message.go`;
