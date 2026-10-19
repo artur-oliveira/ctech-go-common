@@ -20,6 +20,59 @@ type Counter interface {
 	Count(ctx context.Context, key string) (int64, error)
 }
 
+// TTLCounter is a Counter that can report how long a key has left. Limiter
+// uses it for exact Retry-After / RateLimit-Reset values and falls back to the
+// full Window when the Counter does not implement it.
+type TTLCounter interface {
+	Counter
+	// TTL returns the remaining life of key, or 0 when it is absent or has no TTL.
+	TTL(ctx context.Context, key string) (time.Duration, error)
+}
+
+// Store is a TTLCounter that can also drop a key: what Lockout needs
+// (reset the failure count on success). ValkeyCounter and MemoryCounter
+// implement it.
+type Store interface {
+	TTLCounter
+	Delete(ctx context.Context, key string) error
+}
+
+// TTL reads the remaining life of key (PTTL); absent or TTL-less keys give 0.
+func (v *ValkeyCounter) TTL(ctx context.Context, key string) (time.Duration, error) {
+	ms, err := v.client.Do(ctx, v.client.B().Pttl().Key(key).Build()).AsInt64()
+	if err != nil {
+		return 0, fmt.Errorf("valkey PTTL: %w", err)
+	}
+	if ms < 0 {
+		return 0, nil
+	}
+	return time.Duration(ms) * time.Millisecond, nil
+}
+
+func (v *ValkeyCounter) Delete(ctx context.Context, key string) error {
+	if err := v.client.Do(ctx, v.client.B().Del().Key(key).Build()).Error(); err != nil {
+		return fmt.Errorf("valkey DEL: %w", err)
+	}
+	return nil
+}
+
+func (m *MemoryCounter) TTL(_ context.Context, key string) (time.Duration, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e, ok := m.entries[key]
+	if !ok {
+		return 0, nil
+	}
+	return max(time.Until(e.expires), 0), nil
+}
+
+func (m *MemoryCounter) Delete(_ context.Context, key string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.entries, key)
+	return nil
+}
+
 // ValkeyCounter counts on a Valkey/Redis client (cache.RedisBackend.Client()).
 type ValkeyCounter struct {
 	client valkey.Client

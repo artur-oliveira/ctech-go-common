@@ -45,8 +45,41 @@ type Limiter struct {
 	Max    int64
 	Window time.Duration
 	// FailClosed turns counter errors into Unavailable instead of Allow —
-	// the correct posture for auth surfaces.
+	// the correct posture for auth surfaces. Equivalent to FailMode ==
+	// FailClosed; either one set closes the limiter.
 	FailClosed bool
+	// FailMode is the explicit form of FailClosed. The zero value is FailOpen.
+	FailMode FailMode
+}
+
+// FailMode is what a limiter does when it cannot count (backend down).
+type FailMode int
+
+const (
+	// FailOpen allows the request: rate limiting is abuse mitigation, and a
+	// cache blip must not take the product down. Default for throughput caps.
+	FailOpen FailMode = iota
+	// FailClosed denies with Unavailable (503): a limiter that silently stops
+	// limiting turns an auth or money route into an unbounded brute-force
+	// target. Use on login, token, password, payout and similar routes.
+	FailClosed
+)
+
+func (m FailMode) String() string {
+	if m == FailClosed {
+		return "fail-closed"
+	}
+	return "fail-open"
+}
+
+func (l *Limiter) closed() bool { return l.FailClosed || l.FailMode == FailClosed }
+
+// onError maps a counter failure to the outcome the fail mode prescribes.
+func (l *Limiter) onError() Outcome {
+	if l.closed() {
+		return Unavailable
+	}
+	return Allow
 }
 
 func (l *Limiter) key(id string) string {
@@ -59,10 +92,7 @@ func (l *Limiter) key(id string) string {
 func (l *Limiter) Take(ctx context.Context, id string) (Outcome, error) {
 	n, err := l.Counter.Incr(ctx, l.key(id), l.Window)
 	if err != nil {
-		if l.FailClosed {
-			return Unavailable, err
-		}
-		return Allow, err
+		return l.onError(), err
 	}
 	if n > l.Max {
 		return Deny, nil
@@ -76,10 +106,7 @@ func (l *Limiter) Take(ctx context.Context, id string) (Outcome, error) {
 func (l *Limiter) CheckFailures(ctx context.Context, id string) (Outcome, error) {
 	n, err := l.Counter.Count(ctx, l.key(id))
 	if err != nil {
-		if l.FailClosed {
-			return Unavailable, err
-		}
-		return Allow, err
+		return l.onError(), err
 	}
 	if n >= l.Max {
 		return Deny, nil
