@@ -157,6 +157,7 @@ type fakeSQS struct {
 	mu          sync.Mutex
 	msgs        []sqstypes.Message
 	deleted     []string
+	extended    []int32
 	receives    int
 	maxReceives int
 	cancel      context.CancelFunc
@@ -178,6 +179,19 @@ func (f *fakeSQS) DeleteMessage(_ context.Context, in *sqs.DeleteMessageInput, _
 	defer f.mu.Unlock()
 	f.deleted = append(f.deleted, aws.ToString(in.ReceiptHandle))
 	return &sqs.DeleteMessageOutput{}, nil
+}
+
+func (f *fakeSQS) ChangeMessageVisibility(_ context.Context, in *sqs.ChangeMessageVisibilityInput, _ ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.extended = append(f.extended, in.VisibilityTimeout)
+	return &sqs.ChangeMessageVisibilityOutput{}, nil
+}
+
+func (f *fakeSQS) extensions() []int32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]int32(nil), f.extended...)
 }
 
 func TestConsumer_Run_DeletesOnlyHandledMessages(t *testing.T) {
@@ -459,5 +473,57 @@ func TestConsumerRoutesClaimedBodiesToTheExporter(t *testing.T) {
 	// Anything else still goes down the erasure path, which rejects garbage.
 	if err := c.handle(context.Background(), `{"type":"nope"}`); err == nil {
 		t.Fatal("non-export body must still be decoded as erasure")
+	}
+}
+
+// A handler that outlasts the queue's visibility timeout keeps its message invisible
+// while it runs, and the heartbeat stops with the handler.
+func TestConsumer_Run_ExtendsVisibilityWhileAMessageIsBeingHandled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeSQS{maxReceives: 1, cancel: cancel}
+	f.msgs = []sqstypes.Message{{MessageId: aws.String("slow"), ReceiptHandle: aws.String("rh-slow"), Body: aws.String(`{"anything":true}`)}}
+	c := NewConsumer(f, "queue", "billing", NewStore(newFakeDynamo(), "test", 0), (&purgeRecorder{}).fn, newAckServer(t).client()).
+		WithExporter(func(context.Context, []byte) (bool, error) {
+			time.Sleep(120 * time.Millisecond) // a long purge
+			return true, nil
+		}).
+		WithVisibilityHeartbeat(900 * time.Second)
+	c.beat = 20 * time.Millisecond // the test does not wait 300 s
+
+	if err := c.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	got := f.extensions()
+	if len(got) < 3 {
+		t.Fatalf("%d visibility extensions during a 120 ms handler with a 20 ms beat, want at least 3", len(got))
+	}
+	for _, v := range got {
+		if v != 900 {
+			t.Fatalf("extended to %d s, want the queue's 900", v)
+		}
+	}
+	if len(f.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the handled message deleted", f.deleted)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if after := f.extensions(); len(after) != len(got) {
+		t.Fatalf("the heartbeat kept running after the handler returned (%d -> %d)", len(got), len(after))
+	}
+}
+
+// Without WithVisibilityHeartbeat nothing is extended: the default is unchanged.
+func TestConsumer_Run_DoesNotExtendByDefault(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &fakeSQS{maxReceives: 1, cancel: cancel}
+	f.msgs = []sqstypes.Message{{MessageId: aws.String("m"), ReceiptHandle: aws.String("rh"), Body: aws.String(`{"anything":true}`)}}
+	c := NewConsumer(f, "queue", "billing", NewStore(newFakeDynamo(), "test", 0), (&purgeRecorder{}).fn, newAckServer(t).client()).
+		WithExporter(func(context.Context, []byte) (bool, error) { time.Sleep(60 * time.Millisecond); return true, nil })
+	if err := c.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(f.extensions()); n != 0 {
+		t.Fatalf("%d extensions without a heartbeat configured", n)
 	}
 }
