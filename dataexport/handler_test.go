@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -181,5 +182,95 @@ func TestUploadDoesNotFollowRedirects(t *testing.T) {
 	h.http = NewHandler("x", nil, http.DefaultClient, nil).http // the real client, redirects off
 	if _, err := h.Handle(context.Background(), body(t, msg(s3.URL))); err == nil || evilHit {
 		t.Fatalf("redirect must fail the upload and not be followed: err=%v hit=%v", err, evilHit)
+	}
+}
+
+func newStreamHandler(part PartStreamFunc, acks Acker) *Handler {
+	h := NewStreamHandler("poker", part, http.DefaultClient, acks)
+	h.now = func() time.Time { return t0 }
+	h.allow = func(string) bool { return true }
+	return h
+}
+
+func spoolFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	return names
+}
+
+// A streamed part is uploaded with its exact Content-Length (a presigned S3 PUT
+// refuses a chunked body), acked with its real size, and the spool file is gone.
+func TestStreamedPartIsUploadedWithItsLengthAndTheSpoolIsRemoved(t *testing.T) {
+	spool := t.TempDir()
+	t.Setenv("TMPDIR", spool)
+	var got []byte
+	var length int64
+	var chunked bool
+	s3 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got, _ = io.ReadAll(r.Body)
+		length = r.ContentLength
+		chunked = len(r.TransferEncoding) > 0
+	}))
+	defer s3.Close()
+	acks := &fakeAcker{}
+	h := newStreamHandler(func(_ context.Context, sub string, w io.Writer) error {
+		for i := 0; i < 3; i++ { // written in pieces, as a zip writer does
+			if _, err := io.WriteString(w, "chunk-"+sub+";"); err != nil {
+				return err
+			}
+		}
+		return nil
+	}, acks)
+
+	if handled, err := h.Handle(context.Background(), body(t, msg(s3.URL+"/k?sig=SECRET"))); !handled || err != nil {
+		t.Fatalf("handled=%v err=%v", handled, err)
+	}
+	want := "chunk-u1;chunk-u1;chunk-u1;"
+	if string(got) != want || length != int64(len(want)) || chunked {
+		t.Fatalf("uploaded %q (length %d, chunked %v), want %q with a length", got, length, chunked, want)
+	}
+	if len(acks.acks) != 1 || acks.acks[0].Size != int64(len(want)) {
+		t.Fatalf("acks=%+v", acks.acks)
+	}
+	if left := spoolFiles(t, spool); len(left) != 0 {
+		t.Fatalf("spool files left behind: %v", left)
+	}
+}
+
+// A part that fails, or grows past the limit, leaves the message for redelivery,
+// uploads nothing and leaves no file on the disk.
+func TestStreamedPartFailureOrOversizeUploadsNothingAndCleansUp(t *testing.T) {
+	spool := t.TempDir()
+	t.Setenv("TMPDIR", spool)
+	var hits int
+	s3 := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) { hits++ }))
+	defer s3.Close()
+
+	failing := newStreamHandler(func(context.Context, string, io.Writer) error { return errors.New("boom") }, &fakeAcker{})
+	if handled, err := failing.Handle(context.Background(), body(t, msg(s3.URL+"/k"))); !handled || err == nil {
+		t.Fatalf("failing part: handled=%v err=%v", handled, err)
+	}
+
+	big := newStreamHandler(func(_ context.Context, _ string, w io.Writer) error {
+		_, err := io.WriteString(w, strings.Repeat("x", 100))
+		return err
+	}, &fakeAcker{})
+	big.maxPart = 50
+	if handled, err := big.Handle(context.Background(), body(t, msg(s3.URL+"/k"))); !handled || err == nil {
+		t.Fatalf("oversize part: handled=%v err=%v", handled, err)
+	}
+
+	if hits != 0 {
+		t.Fatalf("%d uploads for parts that failed", hits)
+	}
+	if left := spoolFiles(t, spool); len(left) != 0 {
+		t.Fatalf("spool files left behind: %v", left)
 	}
 }
