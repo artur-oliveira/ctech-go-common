@@ -147,6 +147,9 @@ directly — that path is the backing repo and may move.
 - `ratelimit` — transport-agnostic, Valkey-backed rate limiter core (extracted from ctech-account's middleware).
   `Limiter` `ratelimit/ratelimit.go:41` (`Counter`, `Prefix`, `Max`, `Window`, `FailClosed`); `Take` `:59` (throughput
   guard, atomic incr+decide); brute-force guard via `CheckFailures`/`RecordFailure` in `ratelimit/counter.go`.
+  `Bucket` `ratelimit/bucket.go` is the in-process per-key token bucket (`NewBucket(rate, burst, maxKeys)`, `Allow(key)`
+  → ok + retryAfter; bounded memory, a nil/zero one is off): the per-tenant fairness guard, no Valkey round trip, counted per
+  process. `ratelimit/fiberlimit.New(bucket, key, deny)` is its Fiber middleware (sets Retry-After; the service supplies the 429 body).
   `FailClosed` degrades a counter error to `Unavailable` (503), never to unbounded allow, on auth surfaces.
 
 ## Intentionally NOT here
