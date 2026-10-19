@@ -85,7 +85,9 @@ directly — that path is the backing repo and may move.
   `dataexport/handler.go` (build part, PUT to the presigned url, ack; presigned URLs never logged). A part too big for memory uses
   `NewStreamHandler` + `PartStreamFunc` (writes the zip to an `io.Writer` page by page; the handler spools it to a temp file
   and PUTs it with the exact Content-Length a presigned S3 PUT requires; 1 GiB cap; the spool file is always removed);
-  `AckClient` `dataexport/ack.go`. Hook: `erasure.Consumer.WithExporter(handler.Handle)`.
+  `AckClient` `dataexport/ack.go`. `BeginItems`/`Items.Add`/`End` `dataexport/items.go` write one zip entry as
+  `{"items":[...],"truncated":bool}` an item at a time (the streaming counterpart of marshalling a slice).
+  Hook: `erasure.Consumer.WithExporter(handler.Handle)`.
 - `oauth2client` — cached `client_credentials` token fetcher. `TokenManager` `oauth2client/client.go:21`;
   `New` `:34`, `Get` `:40` (refreshes 30s before `expires_in` `:74`).
 - `accountorgs` — M2M client for ctech-account's `GET /v1.0/internal/organizations/{org}/members/{user}`
