@@ -66,6 +66,9 @@ directly — that path is the backing repo and may move.
   Revocation: `WithRevocation`, `Revoke`, `Unrevoke`, `CheckRevoked`, `RevocationTTL`, `ErrTokenRevoked`, `ErrRevocationUnavailable`,
   `VerifyClaimsStrict` in `jwtverify/revocation.go` / `jwtverify/verifier.go` (entries in Valkey DB 0). `VerifyClaims`
   remembers each user's answer in process for 10 s (`WithRevocationMemoryTTL`); `VerifyClaimsStrict` always reads the list.
+- `deadline` — Fiber v3 middleware giving every request a time budget (`deadline.New(timeout, skip...)`): `c.Context()` is
+  `context.Background()` otherwise, so DynamoDB/Valkey/HTTP calls outlive the client. WebSocket upgrades are never bounded; `skip`
+  names other long routes. A propagated `context.DeadlineExceeded` becomes 504.
 - `ttlcache` — small in-process TTL cache (`New[V](ttl, max)`, `Get`/`Set`/`Delete`) for answers re-read on every
   request; the TTL is the staleness the caller accepts. Used by `jwtverify` revocation and `erasure.Store.Blocked`.
 - `erasure` — LGPD account-deletion participant contract. `Store.Blocked` is remembered 10 s per user in process (`WithBlockedMemoryTTL`); a write through the same Store invalidates it. `Message`/`Encode`/`Decode` `erasure/message.go`;
