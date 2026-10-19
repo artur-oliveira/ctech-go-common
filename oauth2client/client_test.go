@@ -1,12 +1,14 @@
 package oauth2client
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
 	backend "gopkg.aoctech.app/api-commons/cache"
+	"gopkg.aoctech.app/api-commons/resilient"
 )
 
 func TestGetCachesTokenUntilExpiry(t *testing.T) {
@@ -114,5 +116,30 @@ func TestAMomentaryOutageOfTheTokenEndpointIsRiddenOutButARefusalIsNot(t *testin
 	defer dead.Close()
 	if _, err := New(dead.Client(), nil, dead.URL, "id", "s", "s").Get(t.Context()); err == nil || down != tokenAttempts {
 		t.Fatalf("a long outage gives up after %d attempts, got err=%v calls=%d", tokenAttempts, err, down)
+	}
+}
+
+type openCircuit struct{ calls *int }
+
+func (o openCircuit) RoundTrip(*http.Request) (*http.Response, error) {
+	*o.calls++
+	return nil, &resilient.OpenError{Host: "account.test", RetryAfter: 10 * time.Second}
+}
+
+// A token endpoint whose circuit is open is not retried after a pause: the open
+// circuit already said the host is down, so the call fails at once.
+func TestGetDoesNotRetryAnOpenCircuit(t *testing.T) {
+	calls := 0
+	oldDelay := retryDelay
+	retryDelay = func(int) time.Duration { return time.Hour } // a retry would hang the test
+	defer func() { retryDelay = oldDelay }()
+
+	tm := New(&http.Client{Transport: openCircuit{&calls}}, nil, "https://account.test/token", "client-id", "secret", "scope:a")
+	_, err := tm.Get(t.Context())
+	if !errors.Is(err, resilient.ErrCircuitOpen) {
+		t.Fatalf("err = %v, want the open-circuit error", err)
+	}
+	if calls != 1 {
+		t.Fatalf("%d attempts against an open circuit, want 1", calls)
 	}
 }

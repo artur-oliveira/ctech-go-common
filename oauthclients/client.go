@@ -29,6 +29,7 @@ import (
 
 	"gopkg.aoctech.app/api-commons/cache"
 	"gopkg.aoctech.app/api-commons/oauth2client"
+	"gopkg.aoctech.app/api-commons/resilient"
 )
 
 // ReadScope is what the route requires.
@@ -75,7 +76,7 @@ func New(cfg Config) *Client {
 	if cfg.BaseURL == "" || cfg.TokenURL == "" || cfg.ClientID == "" || cfg.ClientSecret == "" {
 		return nil
 	}
-	hc := &http.Client{Timeout: requestTimeout}
+	hc := resilient.Client(requestTimeout, resilient.Config{})
 	return &Client{
 		http:    hc,
 		tokens:  oauth2client.New(hc, cfg.Cache, cfg.TokenURL, cfg.ClientID, cfg.ClientSecret, ReadScope),

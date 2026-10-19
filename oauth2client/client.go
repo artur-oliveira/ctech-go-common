@@ -7,6 +7,7 @@ package oauth2client
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,7 @@ import (
 	"time"
 
 	backend "gopkg.aoctech.app/api-commons/cache"
+	"gopkg.aoctech.app/api-commons/resilient"
 )
 
 // TokenManager fetches and caches an OAuth2 client_credentials bearer token,
@@ -146,6 +148,11 @@ func (t *TokenManager) fetch(ctx context.Context, form url.Values) ([]byte, erro
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		resp, err := t.client.Do(req)
 		if err != nil {
+			// An open circuit answers at once and says the host is down: trying again
+			// after a pause would only wait to be told the same.
+			if errors.Is(err, resilient.ErrCircuitOpen) {
+				return nil, err
+			}
 			lastErr = err
 			continue
 		}
