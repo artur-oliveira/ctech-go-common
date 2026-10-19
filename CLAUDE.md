@@ -1,5 +1,13 @@
 # CLAUDE.md — ctech-go-common
 
+## CTech Standards (mandatory)
+
+Before writing, changing or reviewing any code or infra here, load the `ctech-dev-standards` skill (plugin
+`ctech-skills`, repo github.com/artur-oliveira/ctech-skills). It is the single source of truth for backend,
+frontend and infra (patterns, resilience, scale, cost). If anything in this file contradicts it, the skill
+wins and this file must be fixed. Install on a new machine:
+`/plugin marketplace add artur-oliveira/ctech-skills` then `/plugin install ctech-skills@ctech-skills`.
+
 This is a shared foundation library consumed by every CTech Go service — treat every change here (defaults,
 behavior, error semantics, cache/lock backend choices, health checks) as a cross-repo contract change, not a local
 tweak. Confirmed consumers today (`go.mod` pins as of this audit): `ctech-account/api` (`v1.9.1`), `ctech-dfe/api`
