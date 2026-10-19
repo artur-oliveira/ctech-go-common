@@ -60,7 +60,9 @@ directly — that path is the backing repo and may move.
 - `jwtverify` — RS256 access-token validation against ctech-account JWKS. `Verifier` `jwtverify/verifier.go:72`;
   `NewVerifier` `:82`, `Ping` `:89` (health check), `VerifyClaims` `:101`, `Claims` `:48`
   (`Scopes` `:58`, `HasScope` `:61`). JWKS cached under `ctech:jwks` TTL 1h `:27-28`; unknown-kid refresh throttled to
-  60s `:32`, `:150`.
+  60s. Parsed keys are also served from process memory for 5 min (`keyMemoryTTL`, `WithKeyMemoryTTL`): a request
+  touches neither Valkey nor the provider, concurrent cold loads share one fetch, and a provider outage keeps
+  serving the keys already held (stale-if-error).
   Revocation: `WithRevocation`, `Revoke`, `Unrevoke`, `CheckRevoked`, `RevocationTTL`, `ErrTokenRevoked`, `ErrRevocationUnavailable`,
   `VerifyClaimsStrict` in `jwtverify/revocation.go` / `jwtverify/verifier.go` (entries in Valkey DB 0).
 - `erasure` — LGPD account-deletion participant contract. `Message`/`Encode`/`Decode` `erasure/message.go`;

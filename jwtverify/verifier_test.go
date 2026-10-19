@@ -11,6 +11,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -307,5 +308,97 @@ func TestPing_EmptyKeySetFails(t *testing.T) {
 	js := newJWKSServer(t)
 	if err := newVerifier(js).Ping(context.Background()); err == nil {
 		t.Fatal("expected Ping to fail with no published keys")
+	}
+}
+
+// missCache is a shared cache that never holds anything: every lookup goes to the
+// provider, which is what a Valkey outage looks like to the verifier.
+type missCache struct{ cache.Backend }
+
+func (missCache) Get(context.Context, string) ([]byte, bool, error) { return nil, false, nil }
+func (missCache) Set(context.Context, string, []byte, int) error    { return nil }
+
+// countingCache counts reads of the shared cache.
+type countingCache struct {
+	cache.Backend
+	gets atomic.Int64
+}
+
+func (c *countingCache) Get(ctx context.Context, k string) ([]byte, bool, error) {
+	c.gets.Add(1)
+	return c.Backend.Get(ctx, k)
+}
+
+// Once the keys are parsed, a request touches neither the shared cache nor the
+// provider: it used to cost a Valkey GET, a JSON decode and a key rebuild each.
+func TestVerifyClaims_ServesParsedKeysFromMemory(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	js := newJWKSServer(t)
+	js.publish(&key.PublicKey, "kid-1")
+	shared := &countingCache{Backend: cache.NewMemoryBackend(16)}
+	v := jwtverify.NewVerifier(js.srv.URL, testAudience, testIssuer, shared)
+	token := signToken(t, key, "kid-1", baseClaims("user-1", testIssuer, testAudience))
+
+	if _, err := v.VerifyClaims(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	gets, hits := shared.gets.Load(), js.hits.Load()
+	for range 50 {
+		if _, err := v.VerifyClaims(context.Background(), token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := shared.gets.Load() - gets; got != 0 {
+		t.Errorf("%d shared-cache reads over 50 verifications, want 0", got)
+	}
+	if got := js.hits.Load() - hits; got != 0 {
+		t.Errorf("%d provider fetches over 50 verifications, want 0", got)
+	}
+}
+
+// Concurrent first requests share one load: a cold start or an expiry must not
+// become a burst of identical fetches against the identity provider.
+func TestVerifyClaims_ColdStartIsOneFetch(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	js := newJWKSServer(t)
+	js.publish(&key.PublicKey, "kid-1")
+	v := jwtverify.NewVerifier(js.srv.URL, testAudience, testIssuer, missCache{})
+	token := signToken(t, key, "kid-1", baseClaims("user-1", testIssuer, testAudience))
+
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := v.VerifyClaims(context.Background(), token); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := js.hits.Load(); got != 1 {
+		t.Fatalf("%d provider fetches for 20 concurrent cold requests, want 1", got)
+	}
+}
+
+// The provider being down after the keys expired from memory must not fail
+// requests signed with a key we still hold; a kid we never held still fails.
+func TestVerifyClaims_StaleKeysServeWhileTheProviderIsDown(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	js := newJWKSServer(t)
+	js.publish(&key.PublicKey, "kid-1")
+	v := jwtverify.NewVerifier(js.srv.URL, testAudience, testIssuer, missCache{}).WithKeyMemoryTTL(time.Nanosecond)
+	token := signToken(t, key, "kid-1", baseClaims("user-1", testIssuer, testAudience))
+
+	if _, err := v.VerifyClaims(context.Background(), token); err != nil {
+		t.Fatal(err)
+	}
+	js.status.Store(http.StatusInternalServerError)
+	if _, err := v.VerifyClaims(context.Background(), token); err != nil {
+		t.Fatalf("a key we hold was refused during a provider outage: %v", err)
+	}
+	other := signToken(t, key, "kid-never-seen", baseClaims("user-1", testIssuer, testAudience))
+	if _, err := v.VerifyClaims(context.Background(), other); err == nil {
+		t.Fatal("a kid we never held was accepted during an outage")
 	}
 }
