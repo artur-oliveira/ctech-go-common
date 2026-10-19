@@ -20,12 +20,20 @@ tweak. Confirmed consumers (`go.mod` pins on 2026-10-19; the consumer's `go.mod`
 - `@aoctech/ui` (ctech-ui) must absorb UI code the products copied locally (list in ctech-billing
   `docs/specs/2026-10-17-ui-upstream-proposals.md`); do not add new local copies.
 
-## Planned packages
+## Family standard packages (v1.38.0)
 
-Phase 1 of `ctech-skills/docs/plans/2026-10-19-ctech-standardization-plan.md` lists packages to add or extend here
-(`problem` v2, `httpclient`/`resilient`, `idempotency`, `ratelimit` policy, auth kit, Dynamo helpers, `validation`,
-`health`/`fiberobs`/worker supervisor). They are planned, not implemented, and have no dates. Do not document them
-as available until tagged.
+Added for the CTech standard (see `ctech-skills` skill `ctech-dev-standards`). All are additive; each has its own
+`README.md` with API, fail-open/closed decisions and how each product migrates. Products adopt them in Phase 3 of
+`ctech-skills/docs/plans/2026-10-19-ctech-standardization-plan.md`; until a product migrates it keeps its local copy.
+
+- `problem` — type registry, generic constructors, Fiber `Send`/`ErrorHandler`; replaces every `internal/problem` and `apierror`.
+- `resilient` — retrying HTTP client (idempotent-only retry, jitter, `Retry-After`, breaker, negative cache).
+- `idempotency` — Fiber middleware (`Idempotency-Key`, DynamoDB/in-memory `Store`, 409 on conflict, replay header).
+- `ratelimit` — unified policy with explicit `FailMode`, `Lockout`, trusted client IP, `RateLimit-*` headers.
+- `authguard` — scope, internal-scope, client-id and step-up guards, revocation policy, in-process auth cache.
+- `dynamo` — `ConditionalUpdate`/`UpdateVersioned`, owner-bound cursors and `Page` envelopes.
+- `validation` — shared validator, strict JSON bind, common validators (adds `go-playground/validator/v10`).
+- `health` — `/health` and `/health-check` (draft-inadarei), `observability/fiber` access log, `supervisor` for in-process workers.
 
 ## CTech Family — Cross-Repo Awareness (IMPORTANT)
 
