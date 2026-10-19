@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -29,6 +30,11 @@ import (
 const (
 	jwksCacheKey = "ctech:jwks"
 	jwksTTL      = 3600 // 1 hour
+
+	// keyMemoryTTL is how long the parsed keys are served from the process
+	// without asking the shared cache. Every request used to do a Valkey GET, a JSON
+	// decode and a big.Int key rebuild; now that is once per TTL per process.
+	keyMemoryTTL = 5 * time.Minute
 
 	// minJWKSRefetchInterval throttles forced JWKS refreshes triggered by an
 	// unknown kid, so a flood of bogus tokens cannot hammer the identity provider.
@@ -88,10 +94,40 @@ type Verifier struct {
 
 	mu          sync.Mutex
 	lastRefetch time.Time
+
+	// keys is the parsed key set served from memory. It is replaced whole, never
+	// mutated, so readers take no lock. refreshMu serialises the slow path: when the
+	// set expires, one request reloads it and the rest find it fresh (a stampede
+	// of concurrent refetches against the identity provider is how an expiry or a
+	// cache blip becomes an outage).
+	keys      atomic.Pointer[keySet]
+	refreshMu sync.Mutex
+	keyTTL    time.Duration
+}
+
+// keyEntry is one parsed key. A key that fails to parse keeps its error, so the
+// kid is rejected with the same reason it always was.
+type keyEntry struct {
+	pub    crypto.PublicKey
+	method jwt.SigningMethod
+	err    error
+}
+
+type keySet struct {
+	byKID map[string]keyEntry
+	at    time.Time
+}
+
+func (s *keySet) fresh(ttl time.Duration) bool { return s != nil && time.Since(s.at) < ttl }
+
+// WithKeyMemoryTTL overrides how long parsed keys are served from memory.
+func (v *Verifier) WithKeyMemoryTTL(d time.Duration) *Verifier {
+	v.keyTTL = d
+	return v
 }
 
 func NewVerifier(jwksURL, audience, issuer string, cacheBackend cache.Backend) *Verifier {
-	return &Verifier{jwksURL: jwksURL, audience: audience, issuer: issuer, cache: cacheBackend}
+	return &Verifier{jwksURL: jwksURL, audience: audience, issuer: issuer, cache: cacheBackend, keyTTL: keyMemoryTTL}
 }
 
 // Ping reports whether the account JWKS is usable — served from cache when warm,
@@ -182,32 +218,66 @@ func (v *Verifier) verify(ctx context.Context, tokenStr string, strict bool) (*C
 // effect immediately instead of after the cache TTL. An unresolvable kid is
 // rejected — never silently verified against some other key.
 func (v *Verifier) keyForKID(ctx context.Context, kid string) (crypto.PublicKey, jwt.SigningMethod, error) {
-	keys, err := v.fetchJWKS(ctx, false)
-	if err != nil {
-		return nil, nil, fmt.Errorf("jwks unavailable: %w", err)
-	}
-	if k := findKID(keys, kid); k != nil {
-		return jwkToKey(k)
+	if set := v.keys.Load(); set.fresh(v.keyTTL) {
+		if e, ok := set.byKID[kid]; ok {
+			return e.pub, e.method, e.err
+		}
+		// A fresh set that lacks the kid: the provider may have rotated. Go straight
+		// to the throttled forced refresh, without re-reading the shared cache for a
+		// kid a bogus token made up.
+		return v.refreshForUnknownKID(ctx, kid)
 	}
 
-	// Unknown kid: the provider may have rotated keys since we cached them.
-	keys, err = v.fetchJWKS(ctx, true)
+	// Empty or expired: reload under the lock, so concurrent requests share one load.
+	v.refreshMu.Lock()
+	defer v.refreshMu.Unlock()
+	if set := v.keys.Load(); set.fresh(v.keyTTL) {
+		if e, ok := set.byKID[kid]; ok {
+			return e.pub, e.method, e.err
+		}
+	}
+	keys, err := v.fetchJWKS(ctx, false)
+	if err != nil {
+		// Stale-if-error: the identity provider being down must not take every
+		// authenticated route down with it while we still hold the keys it signed
+		// with. A rotated-out key stays accepted only for as long as the outage.
+		if set := v.keys.Load(); set != nil {
+			if e, ok := set.byKID[kid]; ok {
+				return e.pub, e.method, e.err
+			}
+		}
+		return nil, nil, fmt.Errorf("jwks unavailable: %w", err)
+	}
+	set := v.store(keys)
+	if e, ok := set.byKID[kid]; ok {
+		return e.pub, e.method, e.err
+	}
+	return v.refreshForUnknownKID(ctx, kid)
+}
+
+// refreshForUnknownKID forces one throttled JWKS refresh so a key rotation at the
+// identity provider takes effect immediately instead of after the cache TTL. An
+// unresolvable kid is rejected — never silently verified against some other key.
+func (v *Verifier) refreshForUnknownKID(ctx context.Context, kid string) (crypto.PublicKey, jwt.SigningMethod, error) {
+	keys, err := v.fetchJWKS(ctx, true)
 	if err != nil {
 		return nil, nil, fmt.Errorf("jwks refresh failed: %w", err)
 	}
-	if k := findKID(keys, kid); k != nil {
-		return jwkToKey(k)
+	if e, ok := v.store(keys).byKID[kid]; ok {
+		return e.pub, e.method, e.err
 	}
 	return nil, nil, fmt.Errorf("no signing key for kid %q", kid)
 }
 
-func findKID(keys []jwk, kid string) *jwk {
+// store parses a key set once and publishes it for every later request.
+func (v *Verifier) store(keys []jwk) *keySet {
+	set := &keySet{byKID: make(map[string]keyEntry, len(keys)), at: time.Now()}
 	for i := range keys {
-		if keys[i].Kid == kid {
-			return &keys[i]
-		}
+		pub, method, err := jwkToKey(&keys[i])
+		set.byKID[keys[i].Kid] = keyEntry{pub: pub, method: method, err: err}
 	}
-	return nil
+	v.keys.Store(set)
+	return set
 }
 
 // tokenKID extracts the kid from a JWT header without verifying the signature.
