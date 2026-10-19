@@ -64,8 +64,11 @@ directly — that path is the backing repo and may move.
   touches neither Valkey nor the provider, concurrent cold loads share one fetch, and a provider outage keeps
   serving the keys already held (stale-if-error).
   Revocation: `WithRevocation`, `Revoke`, `Unrevoke`, `CheckRevoked`, `RevocationTTL`, `ErrTokenRevoked`, `ErrRevocationUnavailable`,
-  `VerifyClaimsStrict` in `jwtverify/revocation.go` / `jwtverify/verifier.go` (entries in Valkey DB 0).
-- `erasure` — LGPD account-deletion participant contract. `Message`/`Encode`/`Decode` `erasure/message.go`;
+  `VerifyClaimsStrict` in `jwtverify/revocation.go` / `jwtverify/verifier.go` (entries in Valkey DB 0). `VerifyClaims`
+  remembers each user's answer in process for 10 s (`WithRevocationMemoryTTL`); `VerifyClaimsStrict` always reads the list.
+- `ttlcache` — small in-process TTL cache (`New[V](ttl, max)`, `Get`/`Set`/`Delete`) for answers re-read on every
+  request; the TTL is the staleness the caller accepts. Used by `jwtverify` revocation and `erasure.Store.Blocked`.
+- `erasure` — LGPD account-deletion participant contract. `Store.Blocked` is remembered 10 s per user in process (`WithBlockedMemoryTTL`); a write through the same Store invalidates it. `Message`/`Encode`/`Decode` `erasure/message.go`;
   `Store` (`Apply`, `Blocked`, `OrgErased`, `Clear`) over `{prefix}_erasure_state` `erasure/state.go`
   (pure transition `apply`: issued_at ordering, erased terminal); `Consumer` `erasure/consumer.go`
   (deletes a message only after purge + tombstone + ack); `AckClient` `erasure/ack.go`.
