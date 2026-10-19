@@ -75,6 +75,11 @@ type Config struct {
 	IsFailure func(resp *http.Response, err error) bool
 	// OnChange is told when a host's circuit changes state. Default: a log line.
 	OnChange func(host string, from, to State)
+	// Key picks the circuit a request belongs to. Default: the URL host (HostKey).
+	// Use EndpointKey for one circuit per host and path, so a failing endpoint does
+	// not cut off its healthy siblings. OnChange and OpenError then carry that key
+	// in their Host field.
+	Key func(req *http.Request) string
 
 	now func() time.Time
 }
@@ -96,6 +101,9 @@ func (c Config) withDefaults() Config {
 		c.OnChange = func(host string, from, to State) {
 			slog.Warn("resilient: circuit state changed", "host", host, "from", from.String(), "to", to.String())
 		}
+	}
+	if c.Key == nil {
+		c.Key = HostKey
 	}
 	if c.now == nil {
 		c.now = time.Now
@@ -151,7 +159,7 @@ type breakerTransport struct {
 }
 
 func (t *breakerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	host := req.URL.Host
+	host := t.cfg.Key(req)
 	v, ok := t.hosts.Load(host)
 	if !ok {
 		v, _ = t.hosts.LoadOrStore(host, &hostBreaker{host: host, cooldown: t.cfg.Cooldown})
