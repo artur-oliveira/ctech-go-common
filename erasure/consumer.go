@@ -8,6 +8,7 @@ import (
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/sqs"
+	sqstypes "github.com/aws/aws-sdk-go-v2/service/sqs/types"
 )
 
 // PurgeFunc erases/anonymizes the service's data for m.Sub (and every org in
@@ -18,6 +19,7 @@ type PurgeFunc func(ctx context.Context, m Message) (Ack, error)
 type sqsAPI interface {
 	ReceiveMessage(ctx context.Context, in *sqs.ReceiveMessageInput, opts ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error)
 	DeleteMessage(ctx context.Context, in *sqs.DeleteMessageInput, opts ...func(*sqs.Options)) (*sqs.DeleteMessageOutput, error)
+	ChangeMessageVisibility(ctx context.Context, in *sqs.ChangeMessageVisibilityInput, opts ...func(*sqs.Options)) (*sqs.ChangeMessageVisibilityOutput, error)
 }
 
 type Consumer struct {
@@ -30,6 +32,64 @@ type Consumer struct {
 	exporter func(ctx context.Context, body []byte) (handled bool, err error)
 	now      func() time.Time
 	onLock   func(ctx context.Context, sub string)
+
+	// extend is the visibility timeout a heartbeat sets on the message being
+	// handled; zero (the default) means no heartbeat. beat is how often it does.
+	extend time.Duration
+	beat   time.Duration
+}
+
+// maxHeartbeat is how long one message may be extended. SQS refuses to keep a
+// message invisible for more than 12 hours from its first receive; a handler still
+// running after this long is stuck, and letting the message come back is right.
+const maxHeartbeat = 3 * time.Hour
+
+// WithVisibilityHeartbeat keeps the message being handled invisible while its
+// handler runs: every extend/3 it sets the message's visibility timeout to extend
+// again. extend should be the queue's own visibility timeout. Without it a purge or
+// an export that outlasts the timeout is delivered a second time, to another
+// replica, while the first is still working on it; after maxReceiveCount of that
+// the message lands in the DLQ with the work half done. The consumer role needs
+// sqs:ChangeMessageVisibility on the queue; a refused call is logged and the
+// handler carries on.
+func (c *Consumer) WithVisibilityHeartbeat(extend time.Duration) *Consumer {
+	c.extend, c.beat = extend, extend/3
+	return c
+}
+
+// heartbeat extends msg's visibility every c.beat until done is closed or the
+// message has been held for maxHeartbeat.
+func (c *Consumer) heartbeat(ctx context.Context, msg sqstypes.Message, done <-chan struct{}, exited chan<- struct{}) {
+	defer close(exited)
+	ticker := time.NewTicker(c.beat)
+	defer ticker.Stop()
+	deadline := time.Now().Add(maxHeartbeat)
+	for {
+		select {
+		case <-done:
+			return
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			select {
+			case <-done: // the handler returned while this tick was waiting
+				return
+			default:
+			}
+			if now.After(deadline) {
+				return
+			}
+			_, err := c.sqs.ChangeMessageVisibility(ctx, &sqs.ChangeMessageVisibilityInput{
+				QueueUrl:          aws.String(c.queueURL),
+				ReceiptHandle:     msg.ReceiptHandle,
+				VisibilityTimeout: int32(max(c.extend.Seconds(), 1)),
+			})
+			if err != nil && ctx.Err() == nil {
+				slog.WarnContext(ctx, "erasure: extending a message's visibility failed",
+					"service", c.service, "message_id", aws.ToString(msg.MessageId), "error", err)
+			}
+		}
+	}
 }
 
 // WithExporter lets the consumer's queue also carry personal-data export
@@ -77,8 +137,9 @@ func (c *Consumer) locked(ctx context.Context, sub string, rec Record, changed b
 // One message per receive: each received message's visibility clock starts at
 // receive, so a batch would let later messages reappear on another replica
 // while earlier ones still purge.
-// ponytail: no visibility heartbeat. Set the queue's visibility timeout to at
-// least 2x the slowest purge; add a heartbeat if a purge ever outgrows it.
+// A purge or an export that can outlast the queue's visibility timeout needs
+// WithVisibilityHeartbeat; without it the queue's timeout must be at least 2x the
+// slowest handler.
 func (c *Consumer) Run(ctx context.Context) error {
 	for ctx.Err() == nil {
 		out, err := c.sqs.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
@@ -99,7 +160,18 @@ func (c *Consumer) Run(ctx context.Context) error {
 			continue
 		}
 		for _, msg := range out.Messages {
-			if err := c.handle(ctx, aws.ToString(msg.Body)); err != nil {
+			done, exited := make(chan struct{}), make(chan struct{})
+			if c.extend > 0 {
+				go c.heartbeat(ctx, msg, done, exited)
+			} else {
+				close(exited)
+			}
+			err := c.handle(ctx, aws.ToString(msg.Body))
+			// The heartbeat is gone before the message is deleted or left: an
+			// extension after that would hit a receipt handle that no longer counts.
+			close(done)
+			<-exited
+			if err != nil {
 				slog.ErrorContext(ctx, "erasure: message left for redelivery",
 					"service", c.service, "message_id", aws.ToString(msg.MessageId), "error", err)
 				continue

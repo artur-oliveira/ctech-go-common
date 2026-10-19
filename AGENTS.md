@@ -71,7 +71,7 @@ directly — that path is the backing repo and may move.
   names other long routes. A propagated `context.DeadlineExceeded` becomes 504.
 - `ttlcache` — small in-process TTL cache (`New[V](ttl, max)`, `Get`/`Set`/`Delete`) for answers re-read on every
   request; the TTL is the staleness the caller accepts. Used by `jwtverify` revocation and `erasure.Store.Blocked`.
-- `erasure` — LGPD account-deletion participant contract. `Store.Blocked` is remembered 10 s per user in process (`WithBlockedMemoryTTL`); a write through the same Store invalidates it. `Message`/`Encode`/`Decode` `erasure/message.go`;
+- `erasure` — LGPD account-deletion participant contract. `Store.Blocked` is remembered 10 s per user in process (`WithBlockedMemoryTTL`); a write through the same Store invalidates it. `Consumer.WithVisibilityHeartbeat(extend)` keeps the message being handled invisible while a long purge or export runs (every extend/3 it sets the visibility timeout to `extend`, up to 3 h; needs `sqs:ChangeMessageVisibility`; off by default). `Message`/`Encode`/`Decode` `erasure/message.go`;
   `Store` (`Apply`, `Blocked`, `OrgErased`, `Clear`) over `{prefix}_erasure_state` `erasure/state.go`
   (pure transition `apply`: issued_at ordering, erased terminal); `Consumer` `erasure/consumer.go`
   (deletes a message only after purge + tombstone + ack); `AckClient` `erasure/ack.go`.
