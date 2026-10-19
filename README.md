@@ -2,7 +2,7 @@
 
 This is a shared foundation library consumed by every CTech Go service — treat every change here (defaults,
 behavior, error semantics, cache/lock backends) as a cross-repo contract change, not a local tweak. Confirmed
-consumers today: `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-wallet/pix-gateway`, `ctech-poker/api`,
+consumers today: `ctech-account/api`, `ctech-dfe/api`, `ctech-wallet/api`, `ctech-poker/api`,
 and `ctech-billing/api` (see "Consumer version skew" below for exact pins).
 
 Shared Go module for the CTech platform. Reconciles internal packages that were independently duplicated (and drifted)
@@ -221,14 +221,9 @@ The full, anchored API is in [`AGENTS.md`](AGENTS.md). Headline exports:
 | `ws`           | `Registry` `ws/registry.go:22`, `RedisRegistry` `ws/redis.go:28`, `MemoryRegistry` `ws/memory.go:11`                                                                                                    |
 | `awsconfig`    | `Load` `awsconfig/awsconfig.go:18`, `NewDynamoDBClient` `:25`                                                                                                                                           |
 
-**Consumer version skew (verify before using a newly released symbol):** consumers currently pin different tags —
-`ctech-account/api` and `ctech-dfe/api` at `v1.9.1`, `ctech-wallet/api` at `v1.9.1`, `ctech-wallet/pix-gateway` at
-`v1.7.2` (lagging), `ctech-poker/api` at `v1.9.2`, and `ctech-billing/api` at `v1.8.0`. The module is git-tag
-source-distributed and has no automatic consumer bump, so confirm each consumer's actual pin in its `go.mod` before
-relying on a symbol added after an older tag — `pix-gateway` in particular is several releases behind its sibling
-`ctech-wallet/api`.
-
-
+**Consumer version skew (verify before using a newly released symbol):** on 2026-10-19 the pins were
+`ctech-account/api` `v1.29.1`, `ctech-billing/api` `v1.37.0`, `ctech-dfe/api`, `ctech-poker/api` and `ctech-wallet/api` `v1.36.0`. Latest tag: `v1.37.0`. The module is git-tag source-distributed with no automatic consumer bump, so confirm
+each consumer's actual pin in its `go.mod` before relying on a symbol added after an older tag.
 
 ### JWT verification policy
 

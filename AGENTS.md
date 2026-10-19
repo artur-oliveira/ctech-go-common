@@ -171,14 +171,16 @@ primitive `jwtverify` is shared).
 The module is source-distributed via git tags (no auto-bump). Consumers currently pin **different**
 versions — confirm before relying on a symbol added after a given tag:
 
-| Consumer                        | api-commons pin |
+| Consumer                        | api-commons pin (2026-10-19) |
 |---------------------------------|-----------------|
-| `ctech-account/api`             | `v1.9.1`        |
-| `ctech-dfe/api`                 | `v1.9.1`        |
-| `ctech-wallet/api`              | `v1.9.1`        |
-| `ctech-wallet/pix-gateway`      | `v1.7.2` (lagging) |
-| `ctech-poker/api`               | `v1.9.2`        |
-| `ctech-billing/api`             | `v1.18.0` (`byok`, `inter`) |
+| `ctech-account/api`             | `v1.29.1`       |
+| `ctech-billing/api`             | `v1.37.0`       |
+| `ctech-dfe/api`                 | `v1.36.0`       |
+| `ctech-poker/api`               | `v1.36.0`       |
+| `ctech-wallet/api`              | `v1.36.0`       |
+
+Latest tag is `v1.37.0`. These pins drift; the consumer's `go.mod` is the source of truth. `ctech-wallet/pix-gateway`
+no longer exists.
 
 To add a symbol used by a lagging consumer, either bump that consumer's pin or keep the new symbol out of the shared
 contract until all are upgraded.
@@ -194,3 +196,18 @@ Semver git tag only (`README.md` "Deploy"). No `go build` publish step; the prox
 There are NO exceptions.
 
 Any modification affecting behavior, architecture, APIs, integrations, configuration, deployment, security, business rules, or developer workflow MUST include the corresponding documentation update in the same change.
+
+## Family policy (from `ctech-dev-standards`)
+
+- **CDK is frozen**: no new shared constructs; Terraform is the destination for new infra. Fix defects in place.
+- **Alerts** go only to the shared SNS topic `ctech-{env}-alerts` (`AlertsStack` in ctech-cdk) through the `alerts`
+  package. No custom CloudWatch metrics (`PutMetricData`, EMF, MetricFilter) and no CloudWatch alarms.
+- `@aoctech/ui` (ctech-ui) must absorb UI code the products copied locally (list in ctech-billing
+  `docs/specs/2026-10-17-ui-upstream-proposals.md`); do not add new local copies.
+
+## Planned packages
+
+Phase 1 of `ctech-skills/docs/plans/2026-10-19-ctech-standardization-plan.md` lists packages to add or extend here
+(`problem` v2, `httpclient`/`resilient`, `idempotency`, `ratelimit` policy, auth kit, Dynamo helpers, `validation`,
+`health`/`fiberobs`/worker supervisor). They are planned, not implemented, and have no dates. Do not document them
+as available until tagged.

@@ -10,9 +10,22 @@ wins and this file must be fixed. Install on a new machine:
 
 This is a shared foundation library consumed by every CTech Go service — treat every change here (defaults,
 behavior, error semantics, cache/lock backend choices, health checks) as a cross-repo contract change, not a local
-tweak. Confirmed consumers today (`go.mod` pins as of this audit): `ctech-account/api` (`v1.9.1`), `ctech-dfe/api`
-(`v1.9.1`), `ctech-wallet/api` (`v1.9.1`), `ctech-wallet/pix-gateway` (`v1.7.2`, lagging), `ctech-poker/api`
-(`v1.9.2`), `ctech-billing/api` (`v1.18.0`, the first consumer of `byok` and `inter`). See `README.md`/`AGENTS.md` for the full package inventory and API surface.
+tweak. Confirmed consumers (`go.mod` pins on 2026-10-19; the consumer's `go.mod` always wins): `ctech-account/api` `v1.29.1`, `ctech-billing/api` `v1.37.0`, `ctech-dfe/api`, `ctech-poker/api` and `ctech-wallet/api` `v1.36.0`. `ctech-wallet/pix-gateway` no longer exists in the wallet repo. Latest tag: `v1.37.0`. See `README.md`/`AGENTS.md` for the full package inventory and API surface.
+
+## Family policy (from `ctech-dev-standards`)
+
+- **CDK is frozen**: no new shared constructs; Terraform is the destination for new infra. Fix defects in place.
+- **Alerts** go only to the shared SNS topic `ctech-{env}-alerts` (`AlertsStack` in ctech-cdk) through the `alerts`
+  package. No custom CloudWatch metrics (`PutMetricData`, EMF, MetricFilter) and no CloudWatch alarms.
+- `@aoctech/ui` (ctech-ui) must absorb UI code the products copied locally (list in ctech-billing
+  `docs/specs/2026-10-17-ui-upstream-proposals.md`); do not add new local copies.
+
+## Planned packages
+
+Phase 1 of `ctech-skills/docs/plans/2026-10-19-ctech-standardization-plan.md` lists packages to add or extend here
+(`problem` v2, `httpclient`/`resilient`, `idempotency`, `ratelimit` policy, auth kit, Dynamo helpers, `validation`,
+`health`/`fiberobs`/worker supervisor). They are planned, not implemented, and have no dates. Do not document them
+as available until tagged.
 
 ## CTech Family — Cross-Repo Awareness (IMPORTANT)
 
