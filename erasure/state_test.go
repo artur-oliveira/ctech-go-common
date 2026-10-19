@@ -226,3 +226,61 @@ func TestStore_ClearRemembersErase(t *testing.T) {
 		t.Fatalf("late erase after Clear: %+v err=%v, want active", r, err)
 	}
 }
+
+// countingDynamo counts reads.
+type countingDynamo struct {
+	*fakeDynamo
+	gets int
+}
+
+func (c *countingDynamo) GetItem(ctx context.Context, in *dynamodb.GetItemInput, o ...func(*dynamodb.Options)) (*dynamodb.GetItemOutput, error) {
+	c.gets++
+	return c.fakeDynamo.GetItem(ctx, in, o...)
+}
+
+// Blocked runs on every write path of every request: the answer is read once
+// per window, and a lock this process applies shows at once, not after the window.
+func TestStore_BlockedIsRememberedAndInvalidatedByALocalWrite(t *testing.T) {
+	ctx := context.Background()
+	db := &countingDynamo{fakeDynamo: newFakeDynamo()}
+	s := NewStore(db, "test", 0)
+
+	for range 20 {
+		if blocked, err := s.Blocked(ctx, "u"); err != nil || blocked {
+			t.Fatalf("blocked=%v err=%v", blocked, err)
+		}
+	}
+	if db.gets != 1 {
+		t.Fatalf("%d reads for 20 checks, want 1", db.gets)
+	}
+
+	// Apply reads the record itself (+1); the check after it must see the lock.
+	if _, err := s.Apply(ctx, SubKey("u"), msgAt(TypeLocked, "r1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := s.Blocked(ctx, "u"); !blocked {
+		t.Fatal("a lock applied by this process was not seen: the remembered answer survived the write")
+	}
+}
+
+// A lock written by another process is seen when the window ends.
+func TestStore_ALockFromElsewhereIsSeenWhenTheWindowEnds(t *testing.T) {
+	ctx := context.Background()
+	db := newFakeDynamo()
+	s := NewStore(db, "test", 0).WithBlockedMemoryTTL(40 * time.Millisecond)
+	other := NewStore(db, "test", 0)
+
+	if blocked, _ := s.Blocked(ctx, "u"); blocked {
+		t.Fatal("unexpectedly blocked")
+	}
+	if _, err := other.Apply(ctx, SubKey("u"), msgAt(TypeLocked, "r1", 0)); err != nil {
+		t.Fatal(err)
+	}
+	if blocked, _ := s.Blocked(ctx, "u"); blocked {
+		t.Fatal("inside the window the remembered answer stands")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if blocked, _ := s.Blocked(ctx, "u"); !blocked {
+		t.Fatal("the lock was not seen after the window")
+	}
+}

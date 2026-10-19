@@ -25,6 +25,7 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 
 	"gopkg.aoctech.app/api-commons/cache"
+	"gopkg.aoctech.app/api-commons/ttlcache"
 )
 
 const (
@@ -91,6 +92,7 @@ type Verifier struct {
 	cache    cache.Backend
 
 	revocation cache.Backend // nil disables the revocation check; see WithRevocation
+	revoked    *ttlcache.Cache[revocationEntry]
 
 	mu          sync.Mutex
 	lastRefetch time.Time

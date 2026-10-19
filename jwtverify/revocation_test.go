@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"crypto/rsa"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -160,4 +161,112 @@ func TestCheckRevoked(t *testing.T) {
 	if err := jwtverify.CheckRevoked(ctx, downBackend{}, "user-1", now.Unix()); !errors.Is(err, jwtverify.ErrRevocationUnavailable) {
 		t.Fatalf("backend down: err = %v, want ErrRevocationUnavailable", err)
 	}
+}
+
+// getCounter counts reads of the revocation list.
+type getCounter struct {
+	cache.Backend
+	gets atomic.Int64
+}
+
+func (c *getCounter) Get(ctx context.Context, k string) ([]byte, bool, error) {
+	c.gets.Add(1)
+	return c.Backend.Get(ctx, k)
+}
+
+func countedRevocation(t *testing.T) (*rsa.PrivateKey, *jwtverify.Verifier, *getCounter) {
+	t.Helper()
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	js := newJWKSServer(t)
+	js.publish(&key.PublicKey, "kid-1")
+	rev := &getCounter{Backend: cache.NewMemoryBackend(16)}
+	return key, newVerifier(js).WithRevocation(rev), rev
+}
+
+// The list is read once per user per window, not once per request.
+func TestRevocation_AnswerIsRememberedForTheWindow(t *testing.T) {
+	ctx := context.Background()
+	key, v, rev := countedRevocation(t)
+	tok := tokenIssuedAt(t, key, "user-1", time.Now().Add(-time.Minute))
+	for range 50 {
+		if _, err := v.VerifyClaims(ctx, tok); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rev.gets.Load(); got != 1 {
+		t.Fatalf("%d revocation reads for 50 requests, want 1", got)
+	}
+}
+
+// Money-moving routes never trade freshness for speed.
+func TestRevocation_StrictAlwaysReadsTheList(t *testing.T) {
+	ctx := context.Background()
+	key, v, rev := countedRevocation(t)
+	tok := tokenIssuedAt(t, key, "user-1", time.Now().Add(-time.Minute))
+	for range 5 {
+		if _, err := v.VerifyClaimsStrict(ctx, tok); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := rev.gets.Load(); got != 5 {
+		t.Fatalf("%d revocation reads for 5 strict requests, want 5", got)
+	}
+}
+
+// The staleness is bounded: a lock written after the answer was remembered is
+// honoured as soon as the window ends.
+func TestRevocation_ALockIsHonouredWhenTheWindowEnds(t *testing.T) {
+	ctx := context.Background()
+	key, v, rev := countedRevocation(t)
+	v.WithRevocationMemoryTTL(40 * time.Millisecond)
+	tok := tokenIssuedAt(t, key, "user-1", time.Now().Add(-time.Minute))
+
+	if _, err := v.VerifyClaims(ctx, tok); err != nil {
+		t.Fatal(err)
+	}
+	if err := jwtverify.Revoke(ctx, rev, "user-1", time.Now(), jwtverify.RevocationTTL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.VerifyClaims(ctx, tok); err != nil {
+		t.Fatalf("inside the window the remembered answer stands, got %v", err)
+	}
+	time.Sleep(60 * time.Millisecond)
+	if _, err := v.VerifyClaims(ctx, tok); !errors.Is(err, jwtverify.ErrTokenRevoked) {
+		t.Fatalf("after the window err = %v, want ErrTokenRevoked", err)
+	}
+}
+
+// An outage is not an answer: it must not be remembered as "not revoked".
+func TestRevocation_AnOutageIsNotRemembered(t *testing.T) {
+	ctx := context.Background()
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	js := newJWKSServer(t)
+	js.publish(&key.PublicKey, "kid-1")
+	down := &flakyBackend{Backend: cache.NewMemoryBackend(16)}
+	v := newVerifier(js).WithRevocation(down)
+	tok := tokenIssuedAt(t, key, "user-1", time.Now().Add(-time.Minute))
+
+	down.fail.Store(true)
+	if _, err := v.VerifyClaims(ctx, tok); err != nil {
+		t.Fatalf("non-strict fails open during an outage, got %v", err)
+	}
+	down.fail.Store(false)
+	if err := jwtverify.Revoke(ctx, down, "user-1", time.Now(), jwtverify.RevocationTTL); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := v.VerifyClaims(ctx, tok); !errors.Is(err, jwtverify.ErrTokenRevoked) {
+		t.Fatalf("the outage was remembered as a clean answer: err = %v", err)
+	}
+}
+
+type flakyBackend struct {
+	cache.Backend
+	fail atomic.Bool
+}
+
+func (f *flakyBackend) Get(ctx context.Context, k string) ([]byte, bool, error) {
+	if f.fail.Load() {
+		return nil, false, errDown
+	}
+	return f.Backend.Get(ctx, k)
 }

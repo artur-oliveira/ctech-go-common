@@ -13,6 +13,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 
 	"gopkg.aoctech.app/api-commons/dynamo"
+	"gopkg.aoctech.app/api-commons/ttlcache"
 )
 
 // TableSuffix names each participant's state table, {prefix}_erasure_state:
@@ -55,12 +56,30 @@ type Store struct {
 	table     string
 	erasedTTL time.Duration
 	now       func() time.Time
+	// blocked remembers Blocked's answer per user for blockedMemoryTTL. It is read
+	// on every write path of every request, so without it each request pays a
+	// consistent DynamoDB read.
+	blocked *ttlcache.Cache[bool]
+}
+
+// blockedMemoryTTL is how long a process serves a user's "blocked or not" from
+// memory. A lock applied by this process (the consumer) is visible at once; one
+// applied elsewhere is visible within this window.
+const blockedMemoryTTL = 10 * time.Second
+
+const blockedCacheMax = 20000
+
+// WithBlockedMemoryTTL overrides how long Blocked's answer is remembered.
+func (s *Store) WithBlockedMemoryTTL(d time.Duration) *Store {
+	s.blocked = ttlcache.New[bool](d, blockedCacheMax)
+	return s
 }
 
 // NewStore binds the service's erasure-state table. erasedTTL is how long a
 // tombstone is kept (the service's longest retention); 0 keeps it forever.
 func NewStore(db dynamoAPI, tablePrefix string, erasedTTL time.Duration) *Store {
-	return &Store{db: db, table: dynamo.TableName(tablePrefix, TableSuffix), erasedTTL: erasedTTL, now: time.Now}
+	return &Store{db: db, table: dynamo.TableName(tablePrefix, TableSuffix), erasedTTL: erasedTTL, now: time.Now,
+		blocked: ttlcache.New[bool](blockedMemoryTTL, blockedCacheMax)}
 }
 
 // apply is the whole state machine. Lock/unlock are ordered by issued_at
@@ -157,6 +176,8 @@ func (s *Store) ApplyChanged(ctx context.Context, key string, m Message) (Record
 }
 
 func (s *Store) put(ctx context.Context, next Record, cur *Record) error {
+	// Whatever the outcome, the remembered answer for this key is no longer trusted.
+	defer s.blocked.Delete(next.PK)
 	item, err := attributevalue.MarshalMap(next)
 	if err != nil {
 		return err
@@ -178,8 +199,18 @@ func (s *Store) put(ctx context.Context, next Record, cur *Record) error {
 // Blocked reports whether sub must be refused state-changing operations
 // (locked or erased). Services call it on every write path for a user.
 func (s *Store) Blocked(ctx context.Context, sub string) (bool, error) {
-	r, err := s.Get(ctx, SubKey(sub))
-	return r != nil && r.State != StateActive, err
+	key := SubKey(sub)
+	if b, ok := s.blocked.Get(key); ok {
+		return b, nil
+	}
+	r, err := s.Get(ctx, key)
+	if err != nil {
+		// An error is not an answer; it is never remembered.
+		return false, err
+	}
+	b := r != nil && r.State != StateActive
+	s.blocked.Set(key, b)
+	return b, nil
 }
 
 // OrgErased reports whether an organization was erased with its only member.
