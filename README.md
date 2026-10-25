@@ -127,6 +127,22 @@ lock. Use it to cut what is already open (websockets) on the replica that receiv
 others; it has no error return, so keep the connect-time `Store.Blocked` check as the safety net. `Store.ApplyChanged` is
 `Apply` plus "did the state change".
 
+`Consumer.OnFailure(fn)` (v1.39.0) calls `fn(ctx, Failure{Stage, RequestID, Err})` when a message fails at `StageDecode`,
+`StagePurge` or `StageAck`; the consumer itself only logs and leaves the message for redelivery. Unset keeps the old
+behavior. Stock wiring, which alerts through `alerts.Publisher` (SNS topic) without changing redelivery:
+
+```go
+consumer := erasure.NewConsumer(sqs, queueURL, "<service>",
+    store, erasure.AlertingPurge(svc.Purge, pub /*, ErrExpectedWait */), acks).
+    OnFailure(erasure.AlertFailures(pub))
+```
+
+`AlertingPurge` alerts job `erasure-purge-failed` (request id in the detail) and passes the error through; errors that
+match an optional `expected ...error` (errors.Is) are waits, not failures, and do not alert (dfe's `ErrErasureSettling`).
+`AlertFailures` alerts `erasure-decode-failed` and `erasure-ack-failed` and skips `StagePurge` so a purge failure alerts
+once. **Migration:** delete the local `AlertingPurge` copy (wallet, billing, poker `opsalert`, dfe) and its test, use the
+one above, add `.OnFailure(erasure.AlertFailures(pub))`.
+
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
 `user.relinked` (`TypeRelinked`, v1.28.0) is sent by ctech-account when a person who left **one** service (`scope: service`)
