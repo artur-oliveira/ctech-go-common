@@ -35,6 +35,11 @@ Added for the CTech standard (see `ctech-skills` skill `ctech-dev-standards`). A
 - `validation` — shared validator, strict JSON bind, common validators (adds `go-playground/validator/v10`).
 - `health` — `/health` and `/health-check` (draft-inadarei), `observability/fiber` access log, `supervisor` for in-process workers.
 
+## Erasure alerting (v1.39.0)
+
+`erasure.Consumer.OnFailure(fn)` reports decode/purge/ack failures; `erasure.AlertingPurge(purge, pub, expected...)` and
+`erasure.AlertFailures(pub)` (`erasure/alert.go`) are the shared alert wrappers. Services must not keep a local copy.
+
 ## CTech Family — Cross-Repo Awareness (IMPORTANT)
 
 This repo is one service in the CTech product family, not an isolated project. All CTech repos live under the same GitHub account and are meant to be treated as one codebase split across repos:

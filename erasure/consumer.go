@@ -32,6 +32,7 @@ type Consumer struct {
 	exporter func(ctx context.Context, body []byte) (handled bool, err error)
 	now      func() time.Time
 	onLock   func(ctx context.Context, sub string)
+	onFail   func(ctx context.Context, f Failure)
 
 	// extend is the visibility timeout a heartbeat sets on the message being
 	// handled; zero (the default) means no heartbeat. beat is how often it does.
@@ -117,6 +118,48 @@ func (c *Consumer) OnLock(fn func(ctx context.Context, sub string)) *Consumer {
 	return c
 }
 
+// Stage says where in handling a message a Failure happened.
+type Stage string
+
+const (
+	StageDecode Stage = "decode" // the body is not a valid erasure message
+	StagePurge  Stage = "purge"  // the PurgeFunc errored or returned an unknown result
+	StageAck    Stage = "ack"    // the ack to ctech-account could not be sent
+)
+
+// Failure is what OnFailure receives. RequestID is empty for StageDecode.
+type Failure struct {
+	Stage     Stage
+	RequestID string
+	Err       error
+}
+
+// OnFailure registers a hook called when handling a message fails at decode,
+// purge or ack, so a service can alert: the consumer itself only logs and leaves
+// the message for redelivery (and the DLQ). It runs on every delivery, so a
+// redelivered failure calls it again. It has no error return, cannot change what
+// happens to the message, and a panic in it is recovered and logged. Unset (the
+// default) keeps the previous behavior. AlertFailures is the stock hook.
+func (c *Consumer) OnFailure(fn func(ctx context.Context, f Failure)) *Consumer {
+	c.onFail = fn
+	return c
+}
+
+// fail reports a failure to the hook and returns err unchanged.
+func (c *Consumer) fail(ctx context.Context, stage Stage, requestID string, err error) (out error) {
+	out = err // a panicking hook must not turn the failure into nil
+	if err == nil || c.onFail == nil {
+		return err
+	}
+	defer func() {
+		if p := recover(); p != nil {
+			slog.ErrorContext(ctx, "erasure: OnFailure hook panicked", "service", c.service, "panic", fmt.Sprint(p))
+		}
+	}()
+	c.onFail(ctx, Failure{Stage: stage, RequestID: requestID, Err: err})
+	return err
+}
+
 func (c *Consumer) locked(ctx context.Context, sub string, rec Record, changed bool) {
 	if !changed || rec.State != StateLocked || c.onLock == nil {
 		return
@@ -196,7 +239,7 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	}
 	m, err := Decode([]byte(body))
 	if err != nil {
-		return err
+		return c.fail(ctx, StageDecode, "", err)
 	}
 	if !m.Targets(c.service) {
 		return nil
@@ -234,11 +277,12 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 		if rec.RequestID != m.RequestID {
 			return fmt.Errorf("erasure: erase %s is older than active record of request %s", m.RequestID, rec.RequestID)
 		}
-		return c.acks.Send(ctx, Ack{RequestID: m.RequestID, Service: c.service, Result: ResultDone, At: c.now().UTC()})
+		return c.fail(ctx, StageAck, m.RequestID,
+			c.acks.Send(ctx, Ack{RequestID: m.RequestID, Service: c.service, Result: ResultDone, At: c.now().UTC()}))
 	}
 	ack, err := c.purge(ctx, m)
 	if err != nil {
-		return fmt.Errorf("erasure: purge %s: %w", m.RequestID, err)
+		return c.fail(ctx, StagePurge, m.RequestID, fmt.Errorf("erasure: purge %s: %w", m.RequestID, err))
 	}
 	switch ack.Result {
 	case ResultDone:
@@ -253,8 +297,8 @@ func (c *Consumer) handle(ctx context.Context, body string) error {
 	case ResultBlocked:
 		// Stays locked; ctech-account's support flow resolves and redrives.
 	default:
-		return fmt.Errorf("erasure: purge %s returned result %q", m.RequestID, ack.Result)
+		return c.fail(ctx, StagePurge, m.RequestID, fmt.Errorf("erasure: purge %s returned result %q", m.RequestID, ack.Result))
 	}
 	ack.RequestID, ack.Service, ack.At = m.RequestID, c.service, c.now().UTC()
-	return c.acks.Send(ctx, ack)
+	return c.fail(ctx, StageAck, m.RequestID, c.acks.Send(ctx, ack))
 }
