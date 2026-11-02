@@ -143,6 +143,14 @@ match an optional `expected ...error` (errors.Is) are waits, not failures, and d
 once. **Migration:** delete the local `AlertingPurge` copy (wallet, billing, poker `opsalert`, dfe) and its test, use the
 one above, add `.OnFailure(erasure.AlertFailures(pub))`.
 
+**Idle-aware polling (policy).** SQS consumers in always-on services MUST be idle-aware. Budget requests/month =
+pollers x (2592000/(wait+sleep)); a continuous 20s long poll is ~130k/month per poller, ~260k per queue on 2 instances, and
+the AWS free tier is 1M/month total. After an empty receive `Consumer.Run` sleeps 20s, 40s, 80s, ... up to
+`DefaultMaxIdleBackoff` (5 min, ~8.1k/month per poller); a received message resets to immediate polling, and the sleep
+honours ctx cancellation. `Consumer.WithMaxIdleBackoff(d)` changes the cap (a message that arrives during the sleep waits
+at most `d`); `0` restores continuous polling. This is the default, so adopting it needs only a go-common bump. Any other
+SQS receive loop in the family must follow the same policy.
+
 Messages arrive out of order: lock/unlock are ordered by `issued_at`, and `erased` is terminal.
 
 `user.relinked` (`TypeRelinked`, v1.28.0) is sent by ctech-account when a person who left **one** service (`scope: service`)

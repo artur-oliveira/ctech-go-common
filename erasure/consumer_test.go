@@ -527,3 +527,101 @@ func TestConsumer_Run_DoesNotExtendByDefault(t *testing.T) {
 		t.Fatalf("%d extensions without a heartbeat configured", n)
 	}
 }
+
+// idleSQS serves scripted receives (nil = empty, errs[i] = failure), then cancels.
+type idleSQS struct {
+	fakeSQS
+	script []*sqstypes.Message
+	errs   map[int]error
+}
+
+func (f *idleSQS) ReceiveMessage(_ context.Context, _ *sqs.ReceiveMessageInput, _ ...func(*sqs.Options)) (*sqs.ReceiveMessageOutput, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	i := f.receives
+	f.receives++
+	if i >= len(f.script) {
+		f.cancel()
+		return &sqs.ReceiveMessageOutput{}, nil
+	}
+	if err := f.errs[i]; err != nil {
+		return nil, err
+	}
+	if m := f.script[i]; m != nil {
+		return &sqs.ReceiveMessageOutput{Messages: []sqstypes.Message{*m}}, nil
+	}
+	return &sqs.ReceiveMessageOutput{}, nil
+}
+
+func runIdle(t *testing.T, f *idleSQS, max time.Duration) []time.Duration {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f.cancel = cancel
+	c := NewConsumer(f, "queue", "wallet", NewStore(newFakeDynamo(), "test", 0), (&purgeRecorder{}).fn, newAckServer(t).client()).
+		WithMaxIdleBackoff(max)
+	var sleeps []time.Duration
+	c.wait = func(_ context.Context, d time.Duration) { sleeps = append(sleeps, d) }
+	if err := c.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	return sleeps
+}
+
+func TestConsumer_Run_IdleBacksOffAndAMessageResets(t *testing.T) {
+	msg := &sqstypes.Message{MessageId: aws.String("m"), ReceiptHandle: aws.String("rh"), Body: aws.String(body(t, msgAt(TypeLocked, "r1", 0)))}
+	f := &idleSQS{script: []*sqstypes.Message{nil, nil, nil, nil, nil, msg, nil, nil}}
+	got := runIdle(t, f, time.Minute)
+	s := time.Second
+	// 20s, 40s, capped at 60s, then the message resets (no sleep), then 20s, 40s.
+	want := []time.Duration{20 * s, 40 * s, 60 * s, 60 * s, 60 * s, 20 * s, 40 * s}
+	if len(got) < len(want) {
+		t.Fatalf("sleeps = %v, want prefix %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("sleeps = %v, want %v", got, want)
+		}
+	}
+	if len(f.deleted) != 1 {
+		t.Fatalf("deleted = %v, want the one message", f.deleted)
+	}
+}
+
+func TestConsumer_Run_ZeroMaxIdleNeverSleeps(t *testing.T) {
+	if got := runIdle(t, &idleSQS{script: make([]*sqstypes.Message, 4)}, 0); len(got) != 0 {
+		t.Fatalf("sleeps = %v, want none when disabled", got)
+	}
+}
+
+func TestConsumer_Run_ReceiveErrorKeepsItsOwnRetryAndDoesNotAdvanceBackoff(t *testing.T) {
+	// ponytail: the real 5s error sleep is not faked; one error costs 5s of test time.
+	f := &idleSQS{script: make([]*sqstypes.Message, 1), errs: map[int]error{0: errors.New("boom")}}
+	// The error is retried after its own 5s sleep and does not advance the backoff:
+	// the only idle sleep is the first (20s) one, after the next empty receive.
+	if got := runIdle(t, f, time.Minute); len(got) != 1 || got[0] != 20*time.Second {
+		t.Fatalf("idle sleeps = %v, want [20s]", got)
+	}
+}
+
+func TestConsumer_Run_CancelDuringIdleSleepReturnsPromptly(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := &idleSQS{script: make([]*sqstypes.Message, 100), fakeSQS: fakeSQS{cancel: cancel}}
+	c := NewConsumer(f, "queue", "wallet", NewStore(newFakeDynamo(), "test", 0), (&purgeRecorder{}).fn, newAckServer(t).client())
+	done := make(chan error, 1)
+	go func() { done <- c.Run(ctx) }()
+	time.Sleep(50 * time.Millisecond) // now asleep for 20s
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return after cancel during the idle sleep")
+	}
+	if f.receives != 1 {
+		t.Fatalf("receives = %d, want 1 (slept after the first empty one)", f.receives)
+	}
+}
