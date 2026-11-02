@@ -38,6 +38,39 @@ type Consumer struct {
 	// handled; zero (the default) means no heartbeat. beat is how often it does.
 	extend time.Duration
 	beat   time.Duration
+
+	// maxIdle caps the sleep between receives while the queue stays empty; zero
+	// polls back to back. idleBase is the first sleep; wait is the sleep itself.
+	maxIdle  time.Duration
+	idleBase time.Duration
+	wait     func(ctx context.Context, d time.Duration)
+}
+
+const (
+	// DefaultMaxIdleBackoff caps the idle sleep: at the cap one poller costs
+	// 2592000/(20+300) = ~8.1k requests/month instead of ~130k.
+	DefaultMaxIdleBackoff = 5 * time.Minute
+	idleBackoffStart      = 20 * time.Second
+	receiveWaitSeconds    = 20
+)
+
+// WithMaxIdleBackoff sets the longest sleep between receives while the queue is
+// empty (default DefaultMaxIdleBackoff). After each empty receive the sleep
+// doubles from 20s up to d; a received message resets to immediate polling, so a
+// burst drains at full speed. Added latency for a message that arrives while the
+// consumer sleeps is at most d. Zero disables it: continuous long polling.
+func (c *Consumer) WithMaxIdleBackoff(d time.Duration) *Consumer {
+	c.maxIdle = d
+	return c
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+	case <-t.C:
+	}
 }
 
 // maxHeartbeat is how long one message may be extended. SQS refuses to keep a
@@ -102,7 +135,8 @@ func (c *Consumer) WithExporter(h func(ctx context.Context, body []byte) (bool, 
 }
 
 func NewConsumer(sqsClient sqsAPI, queueURL, service string, store *Store, purge PurgeFunc, acks *AckClient) *Consumer {
-	return &Consumer{sqs: sqsClient, queueURL: queueURL, service: service, store: store, purge: purge, acks: acks, now: time.Now}
+	return &Consumer{sqs: sqsClient, queueURL: queueURL, service: service, store: store, purge: purge, acks: acks, now: time.Now,
+		maxIdle: DefaultMaxIdleBackoff, idleBase: idleBackoffStart, wait: sleepCtx}
 }
 
 // OnLock registers a hook called when this consumer moves a sub to locked: on
@@ -183,12 +217,15 @@ func (c *Consumer) locked(ctx context.Context, sub string, rec Record, changed b
 // A purge or an export that can outlast the queue's visibility timeout needs
 // WithVisibilityHeartbeat; without it the queue's timeout must be at least 2x the
 // slowest handler.
+// An empty receive makes the consumer sleep (WithMaxIdleBackoff) so an idle queue
+// costs few SQS requests; any message ends the sleeping.
 func (c *Consumer) Run(ctx context.Context) error {
+	var idle time.Duration
 	for ctx.Err() == nil {
 		out, err := c.sqs.ReceiveMessage(ctx, &sqs.ReceiveMessageInput{
 			QueueUrl:            aws.String(c.queueURL),
 			MaxNumberOfMessages: 1,
-			WaitTimeSeconds:     20,
+			WaitTimeSeconds:     receiveWaitSeconds,
 		})
 		if err != nil {
 			if ctx.Err() != nil {
@@ -201,6 +238,12 @@ func (c *Consumer) Run(ctx context.Context) error {
 			case <-time.After(5 * time.Second):
 			}
 			continue
+		}
+		if len(out.Messages) == 0 && c.maxIdle > 0 {
+			idle = min(max(idle*2, c.idleBase), c.maxIdle)
+			c.wait(ctx, idle)
+		} else {
+			idle = 0
 		}
 		for _, msg := range out.Messages {
 			done, exited := make(chan struct{}), make(chan struct{})
