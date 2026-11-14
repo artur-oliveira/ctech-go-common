@@ -48,7 +48,12 @@ const (
 	// the set on every fetch made a kid verify or fail depending on which
 	// instance answered last. A key only stays past its own removal for this
 	// long; the provider keeps a rotated key published until the next rotation.
-	keyCarryOver = time.Duration(jwksTTL) * time.Second
+	// Deliberately short and independent of jwksTTL: it is the access-token
+	// lifetime, so a carried key outlives its removal by no more than a token it
+	// signed, and an unknown kid still forces a (throttled) refresh to re-learn a
+	// key whose window lapsed. Worst case for a key the provider un-publishes:
+	// jwksTTL (shared cache) + keyCarryOver.
+	keyCarryOver = 15 * time.Minute
 )
 
 type jwk struct {

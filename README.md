@@ -253,7 +253,7 @@ each consumer's actual pin in its `go.mod` before relying on a symbol added afte
 
 The shared verifier accepts only RS256 access tokens with token_use=access. Published JWKs must be RSA and, when metadata is present, declare sig and RS256. Production consumers must provide issuer and audience.
 
-A key that dropped out of a later JWKS fetch stays accepted for `keyCarryOver` (1 h). A provider with several instances can briefly serve different key sets (one late to reload after a rotation; ctech-account, 2026-11-13), and replacing the set on every fetch made a kid verify or fail depending on which instance answered last.
+A key that dropped out of a later JWKS fetch stays accepted for `keyCarryOver` (15 min, the access-token lifetime). A key the provider un-publishes therefore stops verifying after at most `jwksTTL` (1 h shared cache) + `keyCarryOver`; rotate the key at the provider and restart verifiers if it must die sooner. A provider with several instances can briefly serve different key sets (one late to reload after a rotation; ctech-account, 2026-11-13), and replacing the set on every fetch made a kid verify or fail depending on which instance answered last.
 
 ## Acknowledged realtime publishing (v1.12.0)
 
