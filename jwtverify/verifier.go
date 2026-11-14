@@ -41,6 +41,14 @@ const (
 	// minJWKSRefetchInterval throttles forced JWKS refreshes triggered by an
 	// unknown kid, so a flood of bogus tokens cannot hammer the identity provider.
 	minJWKSRefetchInterval = 60 * time.Second
+
+	// keyCarryOver is how long a key that dropped out of a fetched JWKS is still
+	// accepted. A provider with several instances can serve different key sets
+	// for a while (one instance late to reload after a rotation), and replacing
+	// the set on every fetch made a kid verify or fail depending on which
+	// instance answered last. A key only stays past its own removal for this
+	// long; the provider keeps a rotated key published until the next rotation.
+	keyCarryOver = time.Duration(jwksTTL) * time.Second
 )
 
 type jwk struct {
@@ -114,6 +122,7 @@ type keyEntry struct {
 	pub    crypto.PublicKey
 	method jwt.SigningMethod
 	err    error
+	seen   time.Time // last fetch that listed this kid
 }
 
 type keySet struct {
@@ -274,10 +283,19 @@ func (v *Verifier) refreshForUnknownKID(ctx context.Context, kid string) (crypto
 
 // store parses a key set once and publishes it for every later request.
 func (v *Verifier) store(keys []jwk) *keySet {
-	set := &keySet{byKID: make(map[string]keyEntry, len(keys)), at: time.Now()}
+	now := time.Now()
+	set := &keySet{byKID: make(map[string]keyEntry, len(keys)), at: now}
 	for i := range keys {
 		pub, method, err := jwkToKey(&keys[i])
-		set.byKID[keys[i].Kid] = keyEntry{pub: pub, method: method, err: err}
+		set.byKID[keys[i].Kid] = keyEntry{pub: pub, method: method, err: err, seen: now}
+	}
+	// Keep recently seen keys the provider did not list this time (see keyCarryOver).
+	if prev := v.keys.Load(); prev != nil && len(keys) > 0 {
+		for kid, e := range prev.byKID {
+			if _, ok := set.byKID[kid]; !ok && e.err == nil && now.Sub(e.seen) < keyCarryOver {
+				set.byKID[kid] = e
+			}
+		}
 	}
 	v.keys.Store(set)
 	return set

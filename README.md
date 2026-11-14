@@ -253,6 +253,8 @@ each consumer's actual pin in its `go.mod` before relying on a symbol added afte
 
 The shared verifier accepts only RS256 access tokens with token_use=access. Published JWKs must be RSA and, when metadata is present, declare sig and RS256. Production consumers must provide issuer and audience.
 
+A key that dropped out of a later JWKS fetch stays accepted for `keyCarryOver` (1 h). A provider with several instances can briefly serve different key sets (one late to reload after a rotation; ctech-account, 2026-11-13), and replacing the set on every fetch made a kid verify or fail depending on which instance answered last.
+
 ## Acknowledged realtime publishing (v1.12.0)
 
 `ws.Publisher` is an optional interface implemented by both registries. `Publish(ctx, key, payload)` returns transport acceptance or an error. Redis publishing does not fall back locally on failure; durable outbox consumers retry instead. Existing `Registry.Broadcast` retains its local fallback and signature. Acceptance does not acknowledge every socket: clients still require sequence checks and snapshot recovery. Memory publishing is for a single process and rejects cancellation/draining.
