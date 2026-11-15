@@ -129,7 +129,14 @@ func (s *Sealer) Enabled() bool { return s != nil && s.err == nil }
 // Seal encrypts a value. Empty in, empty out — an absent tax id is absent, not
 // a ciphertext of nothing, which would make every unset field distinguishable
 // and identical.
-func (s *Sealer) Seal(plaintext string) (string, error) {
+func (s *Sealer) Seal(plaintext string) (string, error) { return s.SealWith(plaintext, nil) }
+
+// SealWith is Seal bound to associated data: the value only opens with the same
+// bytes. Callers pass something that names where the value lives (table, field
+// and the row's key, e.g. "webhooks/secret/"+pk+"/"+sk), so a ciphertext copied
+// to another row or field fails to verify instead of opening there. The data is
+// not stored; the caller rebuilds it on read. nil is what Seal uses.
+func (s *Sealer) SealWith(plaintext string, aad []byte) (string, error) {
 	if plaintext == "" {
 		return "", nil
 	}
@@ -141,12 +148,15 @@ func (s *Sealer) Seal(plaintext string) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", fmt.Errorf("generating nonce: %w", err)
 	}
-	sealed := aead.Seal(nonce, nonce, []byte(plaintext), nil)
+	sealed := aead.Seal(nonce, nonce, []byte(plaintext), aad)
 	return "v" + strconv.Itoa(s.write) + "." + base64.RawStdEncoding.EncodeToString(sealed), nil
 }
 
 // Open reverses Seal.
-func (s *Sealer) Open(stored string) (string, error) {
+func (s *Sealer) Open(stored string) (string, error) { return s.OpenWith(stored, nil) }
+
+// OpenWith reverses SealWith; aad must be the bytes the value was sealed with.
+func (s *Sealer) OpenWith(stored string, aad []byte) (string, error) {
 	if stored == "" {
 		return "", nil
 	}
@@ -169,10 +179,10 @@ func (s *Sealer) Open(stored string) (string, error) {
 		return "", errors.New("sealed value is too short")
 	}
 	nonce, ct := raw[:aead.NonceSize()], raw[aead.NonceSize():]
-	plaintext, err := aead.Open(nil, nonce, ct, nil)
+	plaintext, err := aead.Open(nil, nonce, ct, aad)
 	if err != nil {
 		// Deliberately not wrapped with the underlying message. A GCM failure is
-		// either the wrong key or a tampered value, and neither is something to
+		// either the wrong key, other associated data or a tampered value, and neither is something to
 		// describe to a caller in detail.
 		return "", errors.New("sealed value did not verify")
 	}
