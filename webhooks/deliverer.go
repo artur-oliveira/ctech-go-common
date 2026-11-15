@@ -3,9 +3,11 @@ package webhooks
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strconv"
 	"sync"
@@ -279,7 +281,7 @@ func (d *Deliverer) post(ctx context.Context, e *Endpoint, ev Event, now time.Ti
 
 	resp, err := d.clientFor(e).Do(req)
 	if err != nil {
-		return 0, "", err
+		return 0, "", transportError(err)
 	}
 	defer resp.Body.Close()
 	// Drained so the connection can be reused; the first bytes are kept with the
@@ -296,6 +298,22 @@ func (d *Deliverer) post(ctx context.Context, e *Endpoint, ev Event, now time.Ti
 		return resp.StatusCode, snippet, fmt.Errorf("endpoint answered %d", resp.StatusCode)
 	}
 	return resp.StatusCode, snippet, nil
+}
+
+// transportError says why a request never got an answer without the text of
+// *url.Error, which carries the whole URL (path and query may hold a customer's
+// token) and the resolved address. The result is stored, logged and shown.
+func transportError(err error) error {
+	var ne net.Error
+	switch {
+	case errors.Is(err, ErrPrivateAddress):
+		return ErrPrivateAddress
+	case errors.Is(err, context.DeadlineExceeded) || (errors.As(err, &ne) && ne.Timeout()):
+		return errors.New("the endpoint did not answer in time")
+	case errors.Is(err, context.Canceled):
+		return context.Canceled
+	}
+	return errors.New("could not reach the endpoint")
 }
 
 func isDue(at string, now time.Time) bool {

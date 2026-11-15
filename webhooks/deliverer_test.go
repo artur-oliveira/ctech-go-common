@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -255,5 +256,15 @@ func TestInternalEndpointUsesTheTrustedClient(t *testing.T) {
 	}
 	if d.clientFor(&Endpoint{}) == plain {
 		t.Fatal("a customer endpoint got the trusted client")
+	}
+}
+
+func TestTransportErrorNeverCarriesTheURL(t *testing.T) {
+	s := &fakeStore{due: []Due{due("e1", "w1", "g1")}, endpoints: map[string]*Endpoint{"w1": {ID: "w1", Secret: "x", Active: true, URL: "https://127.0.0.1:1/hook/TOKEN123?key=SECRETQ"}}}
+	NewDeliverer(s, Config{Client: &http.Client{Timeout: time.Second}}).Deliver(context.Background(), 10, t0)
+	for _, text := range []string{s.attempts[0].Error, s.calls[0], s.detail[0]} {
+		if strings.Contains(text, "TOKEN123") || strings.Contains(text, "SECRETQ") || strings.Contains(text, "127.0.0.1") {
+			t.Fatalf("URL leaked into %q", text)
+		}
 	}
 }
