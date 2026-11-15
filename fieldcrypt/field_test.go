@@ -160,3 +160,35 @@ func TestDuplicateGenerationIsRefused(t *testing.T) {
 }
 
 func hexOf(s string) string { return hex.EncodeToString([]byte(s)) }
+
+func TestSealWithBindsTheValueToItsAssociatedData(t *testing.T) {
+	s := testSealer(t)
+	sealed, err := s.SealWith("whsec_abc", []byte("webhooks/secret/ORG#1/ENDPOINT#a"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.OpenWith(sealed, []byte("webhooks/secret/ORG#1/ENDPOINT#a")); err != nil || got != "whsec_abc" {
+		t.Fatalf("same aad: %q %v", got, err)
+	}
+	// The same ciphertext moved to another row or field must not open.
+	for _, other := range [][]byte{[]byte("webhooks/secret/ORG#1/ENDPOINT#b"), []byte("webhooks/secret/ORG#2/ENDPOINT#a"), nil} {
+		if _, err := s.OpenWith(sealed, other); err == nil {
+			t.Fatalf("opened with aad %q", other)
+		}
+	}
+}
+
+func TestSealAndOpenStayCompatibleWithNoAssociatedData(t *testing.T) {
+	s := testSealer(t)
+	sealed, err := s.Seal("x")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.OpenWith(sealed, nil); err != nil || got != "x" {
+		t.Fatalf("Seal -> OpenWith(nil): %q %v", got, err)
+	}
+	withNil, _ := s.SealWith("y", nil)
+	if got, err := s.Open(withNil); err != nil || got != "y" {
+		t.Fatalf("SealWith(nil) -> Open: %q %v", got, err)
+	}
+}
