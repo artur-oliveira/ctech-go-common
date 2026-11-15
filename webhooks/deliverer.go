@@ -23,6 +23,11 @@ const (
 	// the same way, and left at the head of a queue every tenant shares they would
 	// be the whole of every later batch.
 	trippedRecheck = 2 * time.Minute
+	// groupCapRecheck is how far down the queue the deliveries beyond Config.MaxPerGroup move:
+	// a tenant with a deep backlog must not hold the head of the shared queue every pass.
+	groupCapRecheck = time.Minute
+	// deadlineMargin is the room kept beyond one attempt's timeout, for the writes that follow it.
+	deadlineMargin = 5 * time.Second
 )
 
 // Config tunes a Deliverer.
@@ -33,6 +38,10 @@ type Config struct {
 	UserAgent    string
 	// Workers is how many groups are delivered to at once (default 1).
 	Workers int
+	// MaxPerGroup caps the attempts one group (one endpoint) gets in a pass; the rest are moved
+	// a minute down the queue so other tenants' deliveries come first. 0 is no cap. A receiver
+	// that answers 200 but slowly otherwise fills the whole batch, run after run.
+	MaxPerGroup int
 	// Client delivers to customer endpoints; nil means NewGuardedClient.
 	Client *http.Client
 	// TrustedClient delivers to Internal endpoints; nil means a plain client.
@@ -85,6 +94,18 @@ func (r *Result) add(o Result) {
 	r.Deferred += o.Deferred
 	r.Failed += o.Failed
 	r.Errors = append(r.Errors, o.Errors...)
+}
+
+// outOfTime reports that a pass should stop starting attempts: one attempt can take
+// DeliveryTimeout, and starting it with less than that (plus a margin for the writes after
+// it) left means the run is killed mid-flight, the delivery sent but never marked, and sent
+// again by the next run. A context without a deadline never runs out.
+func outOfTime(ctx context.Context) bool {
+	if ctx.Err() != nil {
+		return true
+	}
+	dl, ok := ctx.Deadline()
+	return ok && time.Until(dl) < DeliveryTimeout+deadlineMargin
 }
 
 // Key identifies a delivery, for DeliverExcept.
@@ -172,6 +193,21 @@ func (d *Deliverer) attemptAll(ctx context.Context, items []Due, now time.Time, 
 			for g := range work {
 				var local Result
 				for i, it := range g {
+					if outOfTime(ctx) {
+						// Left as it is, still due: the next run picks it up.
+						local.Deferred += len(g) - i
+						break
+					}
+					if d.cfg.MaxPerGroup > 0 && i >= d.cfg.MaxPerGroup {
+						for _, rest := range g[i:] {
+							if err := d.store.Defer(ctx, rest.Delivery, now.Add(groupCapRecheck), now); err != nil {
+								local.fail("moving delivery %s past the per-endpoint cap: %v", rest.Delivery.EventID, err)
+								continue
+							}
+							local.Deferred++
+						}
+						break
+					}
 					local.Examined++
 					if !d.attempt(ctx, it, now, &local) {
 						continue
@@ -205,9 +241,15 @@ func (d *Deliverer) attempt(ctx context.Context, item Due, now time.Time, res *R
 	del := item.Delivery
 	endpoint, err := d.store.GetEndpoint(ctx, del)
 	if err != nil {
-		// Deleted under a queued delivery: not retryable, and not worth an
-		// alarm. There is nowhere to send it.
-		if markErr := d.store.MarkAttemptFailed(ctx, del, 0, "endpoint no longer exists", now); markErr != nil {
+		if !errors.Is(err, ErrEndpointGone) {
+			// A read that failed (throttling, a secret that does not open) says nothing about the
+			// endpoint: the delivery is left as it is, still due, and the failure is the job's.
+			res.fail("reading endpoint %s: %v", del.EndpointID, err)
+			return false
+		}
+		// Deleted under a queued delivery: not retryable, and not worth an alarm. There is
+		// nowhere to send it, so it leaves the queue now instead of waiting out eight attempts.
+		if markErr := d.store.Close(ctx, del, "endpoint no longer exists", now); markErr != nil {
 			res.fail("closing orphaned delivery %s: %v", del.EventID, markErr)
 		}
 		return false
