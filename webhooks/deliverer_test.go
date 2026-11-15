@@ -21,6 +21,7 @@ type fakeStore struct {
 	attempts  []Attempt
 	health    []bool
 	refs      []any
+	getErr    error
 	hrefs     []any
 	detail    []string
 }
@@ -29,6 +30,9 @@ func (f *fakeStore) rec(s string) { f.mu.Lock(); f.calls = append(f.calls, s); f
 
 func (f *fakeStore) DueDeliveries(context.Context, int) ([]Due, error) { return f.due, nil }
 func (f *fakeStore) GetEndpoint(_ context.Context, d Delivery) (*Endpoint, error) {
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	if e, ok := f.endpoints[d.EndpointID]; ok {
 		return e, nil
 	}
@@ -192,11 +196,77 @@ func TestInactiveEndpointDefersWhenInternalElseCloses(t *testing.T) {
 	}
 }
 
-func TestEndpointGoneIsClosedAsFailure(t *testing.T) {
+func TestEndpointGoneIsClosedNotRetried(t *testing.T) {
 	s := &fakeStore{due: []Due{due("e1", "w1", "g1")}, endpoints: map[string]*Endpoint{}}
 	NewDeliverer(s, Config{}).Deliver(context.Background(), 10, t0)
-	if len(s.calls) != 1 || s.calls[0] != "failed:e1:endpoint no longer exists" {
-		t.Fatalf("calls = %v", s.calls)
+	if len(s.calls) != 1 || s.calls[0] != "close:e1:endpoint no longer exists" {
+		t.Fatalf("calls = %v: a deleted endpoint's delivery must leave the queue, not wait out eight attempts", s.calls)
+	}
+}
+
+// A throttled read is not "the endpoint is gone": burning an attempt on it, or
+// closing the delivery, would lose a delivery over a hiccup.
+func TestTransientEndpointReadLeavesTheDeliveryUntouched(t *testing.T) {
+	s := &fakeStore{due: []Due{due("e1", "w1", "g1")}, getErr: errors.New("throttled"), endpoints: map[string]*Endpoint{}}
+	res := NewDeliverer(s, Config{}).Deliver(context.Background(), 10, t0)
+	if len(s.calls) != 0 {
+		t.Fatalf("calls = %v, want none", s.calls)
+	}
+	if res.Failed != 1 || len(res.Errors) != 1 {
+		t.Fatalf("res = %+v, want one job-level error", res)
+	}
+}
+
+func TestDeliverStopsStartingAttemptsNearTheDeadline(t *testing.T) {
+	s := &fakeStore{due: []Due{due("e1", "w1", "g1"), due("e2", "w1", "g1")}, endpoints: map[string]*Endpoint{"w1": {ID: "w1", Secret: "x", Active: true}}}
+	d := deliverer(t, s, func(http.ResponseWriter, *http.Request) {
+		t.Error("an attempt was started with no time left to finish it")
+	})
+	// An attempt can take DeliveryTimeout; starting one with less than that left means the run is killed mid-flight.
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	res := d.Deliver(ctx, 10, t0)
+	if len(s.calls) != 0 || res.Deferred != 2 {
+		t.Fatalf("calls=%v res=%+v, want nothing attempted and both left for the next run", s.calls, res)
+	}
+}
+
+func TestRedeliverIsNotHeldBackByTheDeadlineGuard(t *testing.T) {
+	s := &fakeStore{endpoints: map[string]*Endpoint{"w1": {ID: "w1", Secret: "x", Active: true}}}
+	d := deliverer(t, s, func(http.ResponseWriter, *http.Request) {})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := d.Redeliver(ctx, due("e1", "w1", "g1"), t0); err != nil {
+		t.Fatal(err)
+	}
+	if len(s.calls) != 2 || s.calls[1] != "delivered:e1" {
+		t.Fatalf("calls = %v: an explicit replay must be attempted", s.calls)
+	}
+}
+
+func TestDeliverCapsAttemptsPerGroupAndDefersTheRest(t *testing.T) {
+	var items []Due
+	for _, id := range []string{"e1", "e2", "e3", "e4", "e5"} {
+		items = append(items, due(id, "w1", "g1"))
+	}
+	s := &fakeStore{due: items, endpoints: map[string]*Endpoint{"w1": {ID: "w1", Secret: "x", Active: true}}}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	t.Cleanup(srv.Close)
+	s.endpoints["w1"].URL = srv.URL
+	d := NewDeliverer(s, Config{HeaderPrefix: "X-Ctech-", Client: srv.Client(), MaxPerGroup: 2})
+	res := d.Deliver(context.Background(), 10, t0)
+	got := map[string]bool{}
+	for _, c := range s.calls {
+		got[c] = true
+	}
+	// Two delivered; the other three moved a minute down the queue so another tenant's rows come first.
+	for _, want := range []string{"delivered:e1", "delivered:e2", "defer:e3:1m0s", "defer:e4:1m0s", "defer:e5:1m0s"} {
+		if !got[want] {
+			t.Errorf("missing %q in %v", want, s.calls)
+		}
+	}
+	if res.Handled != 2 || res.Deferred != 3 {
+		t.Fatalf("res = %+v", res)
 	}
 }
 
