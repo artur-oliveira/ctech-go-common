@@ -33,6 +33,10 @@ type Delivery struct {
 	Attempts int
 	// NextAttemptAt is RFC 3339; empty or unparseable means due now.
 	NextAttemptAt string
+	// Ref is opaque to the Deliverer: the Store sets it when it lists a delivery
+	// (the tenant, the row's keys) and gets it back on every later call, so it
+	// never has to parse them out of an id.
+	Ref any
 }
 
 // Due is a delivery with its event.

@@ -20,6 +20,7 @@ type fakeStore struct {
 	calls     []string
 	attempts  []Attempt
 	health    []bool
+	refs      []any
 	detail    []string
 }
 
@@ -39,6 +40,9 @@ func (f *fakeStore) RecordAttempt(_ context.Context, _ Delivery, a Attempt, _ ti
 	return nil
 }
 func (f *fakeStore) MarkDelivered(_ context.Context, d Delivery, status int, _ time.Time) error {
+	f.mu.Lock()
+	f.refs = append(f.refs, d.Ref)
+	f.mu.Unlock()
 	f.rec("delivered:" + d.EventID)
 	return nil
 }
@@ -266,5 +270,20 @@ func TestTransportErrorNeverCarriesTheURL(t *testing.T) {
 		if strings.Contains(text, "TOKEN123") || strings.Contains(text, "SECRETQ") || strings.Contains(text, "127.0.0.1") {
 			t.Fatalf("URL leaked into %q", text)
 		}
+	}
+}
+
+type tenantRef struct {
+	Org  string
+	Live bool
+}
+
+func TestDeliveryRefReachesTheStoreUntouched(t *testing.T) {
+	item := due("e1", "w1", "g1")
+	item.Delivery.Ref = tenantRef{Org: "org_1", Live: true}
+	s := &fakeStore{due: []Due{item}, endpoints: map[string]*Endpoint{"w1": {ID: "w1", Secret: "x", Active: true}}}
+	deliverer(t, s, func(http.ResponseWriter, *http.Request) {}).Deliver(context.Background(), 10, t0)
+	if len(s.refs) != 1 || s.refs[0] != (tenantRef{Org: "org_1", Live: true}) {
+		t.Fatalf("refs = %v", s.refs)
 	}
 }
