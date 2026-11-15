@@ -32,6 +32,7 @@ Added for the CTech standard (see `ctech-skills` skill `ctech-dev-standards`). A
 - `ratelimit` — unified policy with explicit `FailMode`, `Lockout`, trusted client IP, `RateLimit-*` headers.
 - `authguard` — scope, internal-scope, client-id and step-up guards, revocation policy, in-process auth cache.
 - `dynamo` — `ConditionalUpdate`/`UpdateVersioned`, owner-bound cursors and `Page` envelopes.
+- `webhooks` — outbound-webhook engine. `Sign`/`Verify` (HMAC-SHA256 over `timestamp.body`, `v1=<hex>`), `NewSecret`, `CheckURL` (https, public host), `NewGuardedClient` (refuses non-public addresses after DNS, no redirect, no proxy), `Verifier` (`hub.challenge` registration check), policy (`MaxFailureRun` 12, `MaxDeliveryAttempts` 8, `Backoff`) and `Deliverer` over a `Store` the service implements on its own storage (`Deliver`, `DeliverExcept`, `DeliverFresh`, `Redeliver`). Fan-out stays in the service. Do not copy a local signer, verifier or SSRF guard (`webhooks/doc.go`, `store.go`).
 - `validation` — shared validator, strict JSON bind, common validators (adds `go-playground/validator/v10`).
 - `health` — `/health` and `/health-check` (draft-inadarei), `observability/fiber` access log, `supervisor` for in-process workers.
 
