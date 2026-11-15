@@ -39,12 +39,20 @@ var nonPublic = []netip.Prefix{
 	netip.MustParsePrefix("2001::/32"),
 }
 
+// globalIPv6 is the only IPv6 block allocated to global unicast. Anything
+// else (IPv4-compatible ::a.b.c.d, site-local fec0::/10, unallocated space)
+// is refused even where Go calls it global unicast.
+var globalIPv6 = netip.MustParsePrefix("2000::/3")
+
 // PublicAddr reports an address a customer's endpoint may resolve to: global
 // unicast, and none of private, loopback, link-local, the ranges in nonPublic,
 // or an IPv4-mapped form of those.
 func PublicAddr(ip netip.Addr) bool {
 	ip = ip.Unmap()
 	if !ip.IsValid() || !ip.IsGlobalUnicast() || ip.IsPrivate() || ip.IsLoopback() || ip.IsLinkLocalUnicast() {
+		return false
+	}
+	if ip.Is6() && !globalIPv6.Contains(ip) {
 		return false
 	}
 	for _, p := range nonPublic {
