@@ -15,6 +15,10 @@ type Endpoint struct {
 	// instead of the guarded one) and the deliveries of a disabled one are kept
 	// for an hour (they can be re-enabled) instead of closed.
 	Internal bool
+	// Ref is opaque to the Deliverer, like Delivery.Ref: whatever the Store needs
+	// to update this endpoint's health (the stored row, its counters). It comes
+	// back in RecordHealth.
+	Ref any
 }
 
 // Event is the thing being delivered. Body is the exact payload, rendered by

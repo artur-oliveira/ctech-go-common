@@ -21,6 +21,7 @@ type fakeStore struct {
 	attempts  []Attempt
 	health    []bool
 	refs      []any
+	hrefs     []any
 	detail    []string
 }
 
@@ -58,8 +59,9 @@ func (f *fakeStore) Close(_ context.Context, d Delivery, cause string, _ time.Ti
 	f.rec("close:" + d.EventID + ":" + cause)
 	return nil
 }
-func (f *fakeStore) RecordHealth(_ context.Context, _ Endpoint, ok bool, detail string, _ time.Time) error {
+func (f *fakeStore) RecordHealth(_ context.Context, e Endpoint, ok bool, detail string, _ time.Time) error {
 	f.mu.Lock()
+	f.hrefs = append(f.hrefs, e.Ref)
 	f.health = append(f.health, ok)
 	f.detail = append(f.detail, detail)
 	f.mu.Unlock()
@@ -285,5 +287,14 @@ func TestDeliveryRefReachesTheStoreUntouched(t *testing.T) {
 	deliverer(t, s, func(http.ResponseWriter, *http.Request) {}).Deliver(context.Background(), 10, t0)
 	if len(s.refs) != 1 || s.refs[0] != (tenantRef{Org: "org_1", Live: true}) {
 		t.Fatalf("refs = %v", s.refs)
+	}
+}
+
+func TestEndpointRefReachesRecordHealthUntouched(t *testing.T) {
+	ep := &Endpoint{ID: "w1", Secret: "x", Active: true, Ref: tenantRef{Org: "org_9"}}
+	s := &fakeStore{due: []Due{due("e1", "w1", "g1")}, endpoints: map[string]*Endpoint{"w1": ep}}
+	deliverer(t, s, func(http.ResponseWriter, *http.Request) {}).Deliver(context.Background(), 10, t0)
+	if len(s.hrefs) != 1 || s.hrefs[0] != (tenantRef{Org: "org_9"}) {
+		t.Fatalf("health refs = %v", s.hrefs)
 	}
 }
