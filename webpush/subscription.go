@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"strings"
 	"time"
@@ -99,3 +100,17 @@ func hostAllowed(host string) bool {
 func decodeB64(s string) ([]byte, error) {
 	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
 }
+
+// hostOf names an endpoint by host only, for errors and logs. The rest of the URL is a credential.
+func hostOf(endpoint string) string {
+	if u, err := url.Parse(endpoint); err == nil && u.Hostname() != "" {
+		return u.Hostname()
+	}
+	return "invalid-endpoint"
+}
+
+// String, GoString and LogValue redact: a Subscription printed with %v, %+v, %#v or passed to slog
+// shows the host only, never the endpoint path or the keys.
+func (s Subscription) String() string       { return "webpush.Subscription{host=" + hostOf(s.Endpoint) + "}" }
+func (s Subscription) GoString() string     { return s.String() }
+func (s Subscription) LogValue() slog.Value { return slog.StringValue(s.String()) }

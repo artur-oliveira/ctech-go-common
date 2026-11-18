@@ -6,7 +6,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -184,11 +186,23 @@ func (s *Sender) post(ctx context.Context, sub Subscription, body []byte, auth s
 	}
 	resp, err := s.client.Do(req)
 	if err != nil {
-		return Result{Outcome: Transient}, fmt.Errorf("webpush: send: %w", err)
+		return Result{Outcome: Transient}, sendError(err, sub.Endpoint)
 	}
 	defer func() { _ = resp.Body.Close() }()
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
 	return classify(resp, s.now()), nil
+}
+
+// sendError wraps a transport failure without the endpoint. http.Client.Do returns a *url.Error
+// carrying the full URL, whose path is a per-subscription token (a credential); only the inner
+// error is kept and the destination is named by host. errors.Is/As still reach the inner cause
+// (context deadline, resilient.ErrCircuitOpen, a dial refusal).
+func sendError(err error, endpoint string) error {
+	var ue *url.Error
+	if errors.As(err, &ue) {
+		err = ue.Err
+	}
+	return fmt.Errorf("webpush: send to %s: %w", hostOf(endpoint), err)
 }
 
 func classify(resp *http.Response, now time.Time) Result {
@@ -272,3 +286,10 @@ func sleepCtx(ctx context.Context, d time.Duration) error {
 		return nil
 	}
 }
+
+// String, GoString and LogValue redact: the payload is application content, so only its size is shown.
+func (m Message) String() string {
+	return fmt.Sprintf("webpush.Message{payload=%d bytes, ttl=%s, urgency=%s}", len(m.Payload), m.TTL, m.Urgency)
+}
+func (m Message) GoString() string     { return m.String() }
+func (m Message) LogValue() slog.Value { return slog.StringValue(m.String()) }

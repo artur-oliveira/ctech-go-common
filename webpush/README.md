@@ -54,6 +54,14 @@ transport error (wrapping `resilient.ErrCircuitOpen` when the host's circuit is 
 - **SSRF:** `NewClient` uses the transport of `webhooks.NewGuardedClient` (dial refuses non-public
   addresses, no redirect, no proxy), and `ParseSubscription` only accepts `AllowedHosts` over https on
   the default port. The endpoint is a secret (it identifies the browser): never log it.
+- **Secrets stay out of errors and logs:** the endpoint path is a per-subscription token, so no error,
+  `Result` or printed value of this package carries the endpoint, `p256dh`, `auth`, the encrypted body or
+  the VAPID JWT. A transport failure is returned as `webpush: send to <host>: <cause>` (the `*url.Error`
+  that `http.Client.Do` builds, with the full URL, is unwrapped; `errors.Is` and `errors.As` still reach the
+  cause). `Subscription`, `Key` and `Message` redact in `%v`, `%+v`, `%#v`, `%s` and `slog` (host, `KID` and
+  payload size only). Callers must follow the rule: log `sub` or `sub.String()`, never `sub.Endpoint`, and
+  never an `*url.Error` from elsewhere. `redact_test.go` fails if the endpoint, a key, `vapid t=` or a JWT
+  shows up in any error path (network, timeout, open circuit, refused redirect, guarded dial).
 - **Retry:** the underlying `resilient` client retries a POST only with an `Idempotency-Key`; `Send`
   derives it from `DedupeKey` and the endpoint (hashed, the endpoint itself never travels as a key).
   A duplicate is absorbed on the device by the notification `tag`. One circuit per push-service host.

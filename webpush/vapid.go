@@ -12,6 +12,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/url"
 	"time"
@@ -135,3 +136,8 @@ func rawSignature(der []byte) ([]byte, error) {
 }
 
 func b64(b []byte) string { return base64.RawURLEncoding.EncodeToString(b) }
+
+// String, GoString and LogValue redact: only the KID is shown, never the private key.
+func (k Key) String() string       { return "webpush.Key{kid=" + k.KID + "}" }
+func (k Key) GoString() string     { return k.String() }
+func (k Key) LogValue() slog.Value { return slog.StringValue(k.String()) }
