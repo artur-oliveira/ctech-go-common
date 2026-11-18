@@ -1,0 +1,12 @@
+{
+  "web_push": 8030,
+  "notification": {
+    "title": "NF-e rejeitada · Empresa Exemplo",
+    "body": "Toque para ver o motivo.",
+    "navigate": "/nfe/detail?key=35260112345678000190550010000000011000000011&org=ORG_EXEMPLO",
+    "tag": "document.rejected:a1b2c3d4",
+    "lang": "pt-BR",
+    "silent": false,
+    "data": {"v": 1, "id": "01JEXEMPLOEVENTID0000000000", "type": "document.rejected"}
+  }
+}
