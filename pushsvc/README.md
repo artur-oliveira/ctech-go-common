@@ -41,24 +41,19 @@ with; otherwise `Subscribe` answers 409 and the owner keeps it.
 
 ## A scheduled push (what a product's tick does)
 
+The product writes its rule (`Decide`) and the Lambda main; `Tick` does the rest.
+
 ```go
 rs := pushsvc.NewReminderStore(db, prefix)
-for _, slot := range pushsvc.SlotsToProcess(now) {        // this slot and the one before; never across midnight
-    var cursor map[string]types.AttributeValue
-    for {
-        page, next, _ := rs.ListSlot(ctx, slot, 100, cursor)
-        for _, r := range page {
-            job, _ := decide(ctx, r)                          // the product's rule; nil means "do not send"
-            if job == nil { continue }
-            if ok, _ := rs.MarkSent(ctx, r.Sub, r.Kind, pushsvc.Today(now)); ok { // before sending: at most one per day
-                invoker.Send(ctx, *job)
-            }
-        }
-        if next == nil { break }
-        cursor = next
-    }
-}
+tick := pushsvc.NewTick(rs, pushsvc.NewStore(db, prefix), rules, invoker). // rules.Decide(ctx, now, reminder) (*Job, error)
+    OnSent(func(ctx context.Context, r pushsvc.Reminder) { /* optional: Poker moves a learned hour here */ })
+err := tick.Run(ctx, time.Now())                                            // from the Scheduler-invoked Lambda
 ```
+
+`Run` reads this slot and the one before (never across midnight), skips a person with no device (the day stays open), asks
+`Decide` (nil means "not today", also leaving the day open), marks the day with `MarkSent` **before** handing the job to the
+`Invoker` (a lost invoke is a push not sent, never one sent twice), and keeps going when one person fails. Only an unreadable
+slot returns an error.
 
 `Put` keeps `last_sent_day`, so moving a reminder's time cannot send twice in a day. Time is `America/Sao_Paulo` for the whole
 family (a per-user zone is a later change).
