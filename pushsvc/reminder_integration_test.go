@@ -108,3 +108,33 @@ func TestDeleteAllRemovesOnlyThatUsersReminders(t *testing.T) {
 		t.Error("u2 was purged")
 	}
 }
+
+func TestMoveSlotOnlyWhileEnabledAndUnmoved(t *testing.T) {
+	ctx := context.Background()
+	rs := newReminders(t)
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: true, Slot: 76})
+	if ok, err := rs.MoveSlot(ctx, "u1", "play", 76, 81); err != nil || !ok {
+		t.Fatalf("move = %v, %v", ok, err)
+	}
+	if page, _, _ := rs.ListSlot(ctx, 81, 10, nil); len(page) != 1 {
+		t.Errorf("the reminder is not in its new slot: %+v", page)
+	}
+	if page, _, _ := rs.ListSlot(ctx, 76, 10, nil); len(page) != 0 {
+		t.Errorf("the reminder is still in its old slot: %+v", page)
+	}
+	// The player moved it themselves meanwhile: a stale move must lose.
+	if ok, _ := rs.MoveSlot(ctx, "u1", "play", 76, 90); ok {
+		t.Error("a move from a slot the reminder no longer has was applied")
+	}
+	// The player switched it off meanwhile: a move must never switch it back on.
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: false, Slot: 81})
+	if ok, _ := rs.MoveSlot(ctx, "u1", "play", 81, 82); ok {
+		t.Error("a disabled reminder was moved")
+	}
+	if got, _, _ := rs.Get(ctx, "u1", "play"); got.Enabled {
+		t.Errorf("got %+v: the move resurrected an opt-out", got)
+	}
+	if page, _, _ := rs.ListSlot(ctx, 82, 10, nil); len(page) != 0 {
+		t.Errorf("a disabled reminder reappeared in the index: %+v", page)
+	}
+}

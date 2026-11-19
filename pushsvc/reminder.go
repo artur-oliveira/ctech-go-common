@@ -72,6 +72,29 @@ func (s *ReminderStore) Put(ctx context.Context, r Reminder) error {
 	return err
 }
 
+// MoveSlot moves an enabled reminder from one slot to another and reports whether it did. The write is conditional on the
+// reminder still being enabled and still in `from`: a player who switched it off (or moved it) while a tick was working
+// is not overruled, so a background move can never resurrect an opt-out.
+func (s *ReminderStore) MoveSlot(ctx context.Context, sub, kind string, from, to int) (bool, error) {
+	if to < 0 || to >= SlotsPerDay {
+		return false, fmt.Errorf("pushsvc: slot %d out of range", to)
+	}
+	_, err := s.base.UpdateItemRaw(ctx, &dynamodb.UpdateItemInput{
+		TableName:                aws.String(s.base.TableName),
+		Key:                      s.key(sub, kind),
+		UpdateExpression:         aws.String("SET #s = :to, slot_key = :sk"),
+		ConditionExpression:      aws.String("attribute_exists(pk) AND #e = :on AND #s = :from"),
+		ExpressionAttributeNames: map[string]string{"#e": "enabled", "#s": "slot"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{
+			":to": nAV(to), ":from": nAV(from), ":sk": sAV(slotKey(to)), ":on": &types.AttributeValueMemberBOOL{Value: true},
+		},
+	})
+	if dynamo.IsConditionFailed(err) {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // Get reads one reminder; ok is false when the person never set it.
 func (s *ReminderStore) Get(ctx context.Context, sub, kind string) (Reminder, bool, error) {
 	it, err := s.base.GetItem(ctx, userPK(sub), reminderSK(kind))
