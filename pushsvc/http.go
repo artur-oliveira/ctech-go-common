@@ -1,23 +1,69 @@
 package pushsvc
 
 import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"io"
 	"regexp"
 
 	"github.com/gofiber/fiber/v3"
 
 	"gopkg.aoctech.app/api-commons/problem"
-	"gopkg.aoctech.app/api-commons/validation"
 )
 
 // deviceID is the id a path accepts: SubscriptionID, 16 hex characters.
 var deviceID = regexp.MustCompile(`^[0-9a-f]{16}$`)
 
+// Bounds of a browser's PushSubscription.toJSON(): the endpoint, the P-256 point and the 16-byte secret in base64url.
+const (
+	maxBodyBytes    = 16 << 10
+	maxEndpointLen  = 2048
+	maxP256dhLen    = 128
+	maxAuthLen      = 64
+	fieldTooLongMsg = "valor longo demais"
+)
+
 type subscriptionBody struct {
-	Endpoint string `json:"endpoint" validate:"required,max=2048"`
+	Endpoint string `json:"endpoint"`
 	Keys     struct {
-		P256dh string `json:"p256dh" validate:"required,max=128"`
-		Auth   string `json:"auth" validate:"required,max=64"`
-	} `json:"keys" validate:"required"`
+		P256dh string `json:"p256dh"`
+		Auth   string `json:"auth"`
+	} `json:"keys"`
+}
+
+// bindSubscription reads the body strictly (no unknown field, nothing after the object, at most maxBodyBytes) and checks
+// each field is present and bounded. It does not use go-common's validation package on purpose: that pulls the validator,
+// mimetype and x/text into every binary of a product that imports pushsvc, about 1.5 MB each.
+func bindSubscription(c fiber.Ctx, dst *subscriptionBody) *problem.Problem {
+	raw := c.Body()
+	if len(raw) > maxBodyBytes {
+		return problem.New(fiber.StatusRequestEntityTooLarge, problem.TypeBadRequest, "Payload Too Large", "request body too large")
+	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(dst); err != nil {
+		return problem.BadRequest("corpo da requisição inválido")
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return problem.BadRequest("corpo da requisição inválido")
+	}
+	var errs []problem.FieldError
+	check := func(field, value string, max int) {
+		switch {
+		case value == "":
+			errs = append(errs, problem.Field(field, "required", "campo obrigatório"))
+		case len(value) > max:
+			errs = append(errs, problem.Field(field, "max", fieldTooLongMsg))
+		}
+	}
+	check("endpoint", dst.Endpoint, maxEndpointLen)
+	check("keys.p256dh", dst.Keys.P256dh, maxP256dhLen)
+	check("keys.auth", dst.Keys.Auth, maxAuthLen)
+	if len(errs) > 0 {
+		return problem.Validation(errs)
+	}
+	return nil
 }
 
 // Mount registers GET /push/config and PUT|GET /push/subscriptions, DELETE /push/subscriptions/:id under router. auth
@@ -42,7 +88,7 @@ func Mount(router fiber.Router, svc *Service, auth fiber.Handler, userID func(fi
 
 	g.Put("/subscriptions", func(c fiber.Ctx) error {
 		var body subscriptionBody
-		if p := validation.BindJSON(c.Body(), &body); p != nil {
+		if p := bindSubscription(c, &body); p != nil {
 			return p.Send(c)
 		}
 		dev, err := svc.Subscribe(c.Context(), userID(c), SubscriptionInput{

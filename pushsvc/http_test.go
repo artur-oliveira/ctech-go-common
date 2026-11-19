@@ -72,3 +72,39 @@ func TestPutRejectsUnknownFields(t *testing.T) {
 		t.Errorf("status = %d", res.StatusCode)
 	}
 }
+
+// The body is read strictly and bounded like the validator used to: these pin the behavior so the dependency can go (the
+// validator pulls mimetype, x/text and friends, about 1.5 MB, into every binary of a product that imports pushsvc).
+func TestPutSubscriptionRejectsBadBodies(t *testing.T) {
+	app := newApp(t, NewService(newMemStore(), publicKey(t)))
+	long := strings.Repeat("a", 2049)
+	const ok = `"endpoint":"https://fcm.googleapis.com/x","keys":{"p256dh":"a","auth":"b"}`
+	for name, tc := range map[string]struct {
+		body string
+		want int
+	}{
+		"no keys":            {`{"endpoint":"https://fcm.googleapis.com/x"}`, 422},
+		"no endpoint":        {`{"keys":{"p256dh":"a","auth":"b"}}`, 422},
+		"no p256dh":          {`{"endpoint":"https://fcm.googleapis.com/x","keys":{"auth":"b"}}`, 422},
+		"no auth":            {`{"endpoint":"https://fcm.googleapis.com/x","keys":{"p256dh":"a"}}`, 422},
+		"endpoint too long":  {`{"endpoint":"` + long + `","keys":{"p256dh":"a","auth":"b"}}`, 422},
+		"p256dh too long":    {`{"endpoint":"https://fcm.googleapis.com/x","keys":{"p256dh":"` + strings.Repeat("a", 129) + `","auth":"b"}}`, 422},
+		"auth too long":      {`{"endpoint":"https://fcm.googleapis.com/x","keys":{"p256dh":"a","auth":"` + strings.Repeat("a", 65) + `"}}`, 422},
+		"content after json": {`{` + ok + `} {}`, 400},
+		"not json":           {`endpoint=x`, 400},
+		"unknown field":      {`{` + ok + `,"pad":1}`, 400},
+	} {
+		if res := do(t, app, "PUT", "/v1.0/push/subscriptions", tc.body); res.StatusCode != tc.want {
+			t.Errorf("%s: status = %d, want %d", name, res.StatusCode, tc.want)
+		}
+	}
+}
+
+// A subscription body is a few hundred bytes; anything past the limit is refused before it is parsed.
+func TestPutSubscriptionRefusesABodyOverTheLimit(t *testing.T) {
+	app := newApp(t, NewService(newMemStore(), publicKey(t)))
+	body := `{"endpoint":"https://fcm.googleapis.com/x","keys":{"p256dh":"a","auth":"b"},"pad":"` + strings.Repeat("a", maxBodyBytes) + `"}`
+	if res := do(t, app, "PUT", "/v1.0/push/subscriptions", body); res.StatusCode != 413 {
+		t.Errorf("status = %d, want 413", res.StatusCode)
+	}
+}
