@@ -3,6 +3,7 @@ package pushsvc
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 
@@ -99,6 +100,17 @@ func (s *Service) Subscribe(ctx context.Context, sub string, in SubscriptionInpu
 	}
 	id := SubscriptionID(in.Endpoint)
 	for _, previous := range owners {
+		// The move is for a shared browser: the new person's browser holds the same subscription, so it presents the
+		// same keys. A request that names the endpoint with other keys is not that browser and must not evict its owner.
+		held, err := s.store.List(ctx, previous)
+		if err != nil {
+			return nil, err
+		}
+		for _, h := range held {
+			if h.ID == id && !sameKeys(h, in) {
+				return nil, problem.Conflict("este dispositivo já pertence a outra conta")
+			}
+		}
 		if err := s.store.Delete(ctx, previous, id); err != nil && !errors.Is(err, ErrNotFound) {
 			return nil, err
 		}
@@ -109,6 +121,12 @@ func (s *Service) Subscribe(ctx context.Context, sub string, in SubscriptionInpu
 		return nil, err
 	}
 	return &Device{ID: id, Device: label}, nil
+}
+
+// sameKeys compares the subscription keys in constant time: auth is a secret.
+func sameKeys(h Subscription, in SubscriptionInput) bool {
+	return subtle.ConstantTimeCompare([]byte(h.P256dh), []byte(in.P256dh)) == 1 &&
+		subtle.ConstantTimeCompare([]byte(h.Auth), []byte(in.Auth)) == 1
 }
 
 // Devices lists the person's devices.

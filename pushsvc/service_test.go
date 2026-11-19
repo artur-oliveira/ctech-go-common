@@ -145,3 +145,25 @@ func TestDeviceLabel(t *testing.T) {
 		}
 	}
 }
+
+// An endpoint is a secret capability URL, but whoever learns one must not be able to evict its owner by registering it
+// with keys of their own: the legitimate move (a shared browser, a new person signed in) carries the same keys.
+func TestSubscribeRefusesToTakeAnEndpointWithDifferentKeys(t *testing.T) {
+	st := newMemStore()
+	svc := NewService(st, publicKey(t))
+	in := goodSubscription(t)
+	if _, err := svc.Subscribe(context.Background(), "alice", in); err != nil {
+		t.Fatal(err)
+	}
+	attacker := goodSubscription(t) // same endpoint, other P-256 key
+	attacker.Auth = "BBBBBBBBBBBBBBBBBBBBBB"
+	if _, err := svc.Subscribe(context.Background(), "mallory", attacker); err == nil || !strings.Contains(err.Error(), "outra conta") {
+		t.Fatalf("err = %v, want a conflict", err)
+	}
+	if a, _ := st.List(context.Background(), "alice"); len(a) != 1 {
+		t.Errorf("alice lost her subscription: %v", a)
+	}
+	if m, _ := st.List(context.Background(), "mallory"); len(m) != 0 {
+		t.Errorf("mallory got a row: %v", m)
+	}
+}
