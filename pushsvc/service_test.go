@@ -167,3 +167,23 @@ func TestSubscribeRefusesToTakeAnEndpointWithDifferentKeys(t *testing.T) {
 		t.Errorf("mallory got a row: %v", m)
 	}
 }
+
+func TestSubscribeCallsTheOnSubscribeHookAfterTheRowIsStored(t *testing.T) {
+	st := newMemStore()
+	var got []string
+	svc := NewService(st, publicKey(t)).WithOnSubscribe(func(_ context.Context, sub string) error {
+		rows, _ := st.List(context.Background(), sub)
+		got = append(got, sub+":"+string(rune('0'+len(rows))))
+		return nil
+	})
+	if _, err := svc.Subscribe(context.Background(), "u1", goodSubscription(t)); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "u1:1" {
+		t.Errorf("hook calls = %v, want one call after the row exists", got)
+	}
+	failing := NewService(newMemStore(), publicKey(t)).WithOnSubscribe(func(context.Context, string) error { return errors.New("boom") })
+	if _, err := failing.Subscribe(context.Background(), "u1", goodSubscription(t)); err == nil {
+		t.Error("a failing hook must fail the subscribe so the client retries")
+	}
+}

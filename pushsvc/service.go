@@ -31,6 +31,14 @@ type Service struct {
 	store     SubscriptionStore
 	publicKey string
 	kid       string
+	onSub     func(ctx context.Context, sub string) error
+}
+
+// WithOnSubscribe sets a hook run after a device is stored (a product seeds the person's default preferences there). Its
+// error fails the Subscribe, so the client's next sync retries it; the hook must be idempotent.
+func (s *Service) WithOnSubscribe(fn func(ctx context.Context, sub string) error) *Service {
+	s.onSub = fn
+	return s
 }
 
 // NewService returns a Service. An empty or malformed publicKey leaves push off: Config says so and Subscribe refuses.
@@ -119,6 +127,11 @@ func (s *Service) Subscribe(ctx context.Context, sub string, in SubscriptionInpu
 	id, err = s.store.Upsert(ctx, sub, Subscription{Endpoint: in.Endpoint, P256dh: in.P256dh, Auth: in.Auth, VapidKID: s.kid, Device: label})
 	if err != nil {
 		return nil, err
+	}
+	if s.onSub != nil {
+		if err := s.onSub(ctx, sub); err != nil {
+			return nil, err
+		}
 	}
 	return &Device{ID: id, Device: label}, nil
 }
