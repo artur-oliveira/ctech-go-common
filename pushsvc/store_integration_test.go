@@ -3,12 +3,9 @@
 package pushsvc
 
 import (
-	"strconv"
-
 	"context"
 	"errors"
 	"fmt"
-	"github.com/aws/aws-sdk-go-v2/service/dynamodb/types"
 	"sync"
 	"testing"
 	"time"
@@ -122,19 +119,6 @@ func TestConcurrentUpsertNeverExceeds10(t *testing.T) {
 	}
 }
 
-// count reads the guard row.
-func (s *Store) count(ctx context.Context, sub string) (int, error) {
-	it, err := s.base.GetItem(ctx, userPK(sub), countsSK)
-	if err != nil || it == nil {
-		return 0, err
-	}
-	n, ok := it["subscriptions"].(*types.AttributeValueMemberN)
-	if !ok {
-		return 0, nil
-	}
-	return strconv.Atoi(n.Value)
-}
-
 func TestPurgeUserRemovesEveryRowOfThePersonAndOnlyHers(t *testing.T) {
 	ctx := context.Background()
 	db, prefix := newTestDB(t)
@@ -170,5 +154,65 @@ func TestPurgeUserRemovesEveryRowOfThePersonAndOnlyHers(t *testing.T) {
 	}
 	if n, err := st.PurgeUser(ctx, "u1"); err != nil || n != 0 {
 		t.Errorf("a second purge = %d, %v; must be a no-op", n, err)
+	}
+}
+
+// DynamoDB expires a device row by TTL without touching META#counts, so the count only ever drifts high. Slots that are
+// free in fact must be usable, and a person whose every device expired must be able to subscribe again.
+func TestUpsertRecoversWhenTTLExpiryLeftTheCountHigh(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	var ids []string
+	for i := 0; i < MaxSubscriptionsPerUser; i++ {
+		id, err := st.Upsert(ctx, "u1", sub(i))
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	for _, id := range ids[:6] { // six rows expire behind the count's back
+		if _, err := st.base.DeleteItem(ctx, userPK("u1"), subSK(id)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := st.Upsert(ctx, "u1", sub(100)); err != nil {
+		t.Fatal(err)
+	}
+	list, _ := st.List(ctx, "u1")
+	if len(list) != 5 {
+		t.Errorf("devices = %d, want the 4 live ones plus the new one, with no live device evicted", len(list))
+	}
+	if c, _ := st.count(ctx, "u1"); c != 5 {
+		t.Errorf("count = %d, want it resynced to 5", c)
+	}
+}
+
+func TestUpsertWorksWhenEveryDeviceExpired(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	var ids []string
+	for i := 0; i < MaxSubscriptionsPerUser; i++ {
+		id, _ := st.Upsert(ctx, "u1", sub(i))
+		ids = append(ids, id)
+	}
+	for _, id := range ids {
+		_, _ = st.base.DeleteItem(ctx, userPK("u1"), subSK(id))
+	}
+	if _, err := st.Upsert(ctx, "u1", sub(200)); err != nil {
+		t.Fatalf("a person whose devices all expired must be able to subscribe again: %v", err)
+	}
+	if c, _ := st.count(ctx, "u1"); c != 1 {
+		t.Errorf("count = %d, want 1", c)
+	}
+}
+
+func TestAnEmptySubjectNeverAddressesTheSharedPartition(t *testing.T) {
+	ctx := context.Background()
+	st := newStore(t)
+	if _, err := st.Upsert(ctx, "", sub(1)); err == nil {
+		t.Error("Upsert with an empty sub was accepted")
+	}
+	if _, err := st.PurgeUser(ctx, ""); err == nil {
+		t.Error("PurgeUser with an empty sub was accepted: it would wipe the partition USER#")
 	}
 }

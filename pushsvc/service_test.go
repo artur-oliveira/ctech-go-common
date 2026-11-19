@@ -3,9 +3,12 @@ package pushsvc
 import (
 	"context"
 	"errors"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gofiber/fiber/v3"
 
 	"gopkg.aoctech.app/api-commons/webpush"
 )
@@ -146,25 +149,49 @@ func TestDeviceLabel(t *testing.T) {
 	}
 }
 
-// An endpoint is a secret capability URL, but whoever learns one must not be able to evict its owner by registering it
-// with keys of their own: the legitimate move (a shared browser, a new person signed in) carries the same keys.
-func TestSubscribeRefusesToTakeAnEndpointWithDifferentKeys(t *testing.T) {
-	st := newMemStore()
-	svc := NewService(st, publicKey(t))
-	in := goodSubscription(t)
-	if _, err := svc.Subscribe(context.Background(), "alice", in); err != nil {
-		t.Fatal(err)
+// An endpoint is a secret capability URL. A request that names it with keys of its own is not the browser that owns it:
+// it must not evict the owner, and it must not block the owner either (whoever registers an endpoint first would
+// otherwise lock its real owner out). A row with the wrong keys only produces a push the browser cannot decrypt.
+func TestSubscribeWithDifferentKeysNeverEvictsTheOwnerNorBlocksTheCaller(t *testing.T) {
+	ctx := context.Background()
+	for _, attackerFirst := range []bool{false, true} {
+		st := newMemStore()
+		svc := NewService(st, publicKey(t))
+		owner := goodSubscription(t)
+		attacker := goodSubscription(t) // same endpoint, other P-256 key and secret
+		attacker.Auth = "BBBBBBBBBBBBBBBBBBBBBB"
+		first, second := struct {
+			who string
+			in  SubscriptionInput
+		}{"alice", owner}, struct {
+			who string
+			in  SubscriptionInput
+		}{"mallory", attacker}
+		if attackerFirst {
+			first, second = second, first
+		}
+		for _, r := range []struct {
+			who string
+			in  SubscriptionInput
+		}{first, second} {
+			if _, err := svc.Subscribe(ctx, r.who, r.in); err != nil {
+				t.Fatalf("attackerFirst=%v: %s was refused: %v", attackerFirst, r.who, err)
+			}
+		}
+		if a, _ := st.List(ctx, "alice"); len(a) != 1 {
+			t.Errorf("attackerFirst=%v: alice's subscription = %v, want it kept or created", attackerFirst, a)
+		}
 	}
-	attacker := goodSubscription(t) // same endpoint, other P-256 key
-	attacker.Auth = "BBBBBBBBBBBBBBBBBBBBBB"
-	if _, err := svc.Subscribe(context.Background(), "mallory", attacker); err == nil || !strings.Contains(err.Error(), "outra conta") {
-		t.Fatalf("err = %v, want a conflict", err)
-	}
-	if a, _ := st.List(context.Background(), "alice"); len(a) != 1 {
-		t.Errorf("alice lost her subscription: %v", a)
-	}
-	if m, _ := st.List(context.Background(), "mallory"); len(m) != 0 {
-		t.Errorf("mallory got a row: %v", m)
+}
+
+func TestMountRefusesACallerWithoutAnId(t *testing.T) {
+	app := fiber.New()
+	Mount(app.Group("/v1.0"), NewService(newMemStore(), publicKey(t)), func(c fiber.Ctx) error { return c.Next() },
+		func(fiber.Ctx) string { return "" })
+	req := httptest.NewRequest("GET", "/v1.0/push/subscriptions", nil)
+	res, err := app.Test(req)
+	if err != nil || res.StatusCode != 401 {
+		t.Errorf("status = %v, %v: an empty id would address the shared partition USER#", res.StatusCode, err)
 	}
 }
 

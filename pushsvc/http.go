@@ -28,6 +28,13 @@ func Mount(router fiber.Router, svc *Service, auth fiber.Handler, userID func(fi
 	for _, h := range extra {
 		handlers = append(handlers, h)
 	}
+	// An empty id would address the shared partition USER#: refuse it before any route runs.
+	handlers = append(handlers, func(c fiber.Ctx) error {
+		if userID(c) == "" {
+			return problem.Unauthorized("credenciais ausentes").Send(c)
+		}
+		return c.Next()
+	})
 	g := router.Group("/push", handlers...)
 	send := func(c fiber.Ctx, err error) error { return problem.FromError(err).Send(c) }
 

@@ -48,6 +48,9 @@ const (
 // ErrNotFound reports a subscription that does not exist for this person.
 var ErrNotFound = errors.New("pushsvc: subscription not found")
 
+// ErrEmptySubject refuses a write for an empty person id: it would address the one partition `USER#` every such caller shares.
+var ErrEmptySubject = errors.New("pushsvc: empty subject")
+
 // Subscription is one browser of one person.
 type Subscription struct {
 	ID         string `dynamodbav:"id"           json:"id"`
@@ -126,6 +129,20 @@ func (s *Store) item(sub string, d Subscription, now time.Time) (map[string]type
 	return item, nil
 }
 
+// count reads the guard row: how many devices the person holds, as far as the row knows. DynamoDB expires a device row by TTL
+// without touching it, so it can be higher than the rows that exist, never lower.
+func (s *Store) count(ctx context.Context, sub string) (int, error) {
+	it, err := s.base.GetItem(ctx, userPK(sub), countsSK)
+	if err != nil || it == nil {
+		return 0, err
+	}
+	n, ok := it["subscriptions"].(*types.AttributeValueMemberN)
+	if !ok {
+		return 0, nil
+	}
+	return strconv.Atoi(n.Value)
+}
+
 // OtherOwners returns the people other than `sub` who hold a subscription for this endpoint. One browser endpoint
 // belongs to one person at a time: when someone signs in on a shared browser the previous person's row must go, or both
 // would be notified on the same screen. The index is eventually consistent; the logout cleanup is the primary guard and
@@ -159,6 +176,9 @@ func (s *Store) OtherOwners(ctx context.Context, endpoint, sub string) ([]string
 // is idempotent). A new one takes a slot under the count row's guard; a full person loses the device seen least
 // recently, in the same transaction, so the count never passes MaxSubscriptionsPerUser.
 func (s *Store) Upsert(ctx context.Context, sub string, d Subscription) (string, error) {
+	if sub == "" {
+		return "", ErrEmptySubject
+	}
 	now := s.now()
 	d.ID = SubscriptionID(d.Endpoint)
 	d.LastSeenAt = stamp(now)
@@ -190,9 +210,21 @@ func (s *Store) Upsert(ctx context.Context, sub string, d Subscription) (string,
 		if err == nil || !dynamo.IsConditionFailed(err) {
 			return d.ID, err
 		}
-		// Another request filled the last slot meanwhile: evict like a full person.
+		// The guard refused: either another request filled the last slot, or TTL expiry left the count higher than the
+		// rows that exist. Read both again.
 		if existing, err = s.List(ctx, sub); err != nil {
 			return "", err
+		}
+		if len(existing) < MaxSubscriptionsPerUser {
+			// Free slots in fact: resync the count to what exists plus this device, conditioned on the value just read so a
+			// concurrent subscribe cannot be overwritten, instead of evicting a live device.
+			stale, err := s.count(ctx, sub)
+			if err != nil {
+				return "", err
+			}
+			resync := s.base.BuildRawUpdateTxItem(pk, &counts, "SET subscriptions = :n", "subscriptions = :stale", nil,
+				map[string]types.AttributeValue{":n": nAV(len(existing) + 1), ":stale": nAV(stale)})
+			return d.ID, s.base.TransactWrite(ctx, []types.TransactWriteItem{resync, s.base.BuildPutTxItemIfAbsent(item)})
 		}
 	}
 	if len(existing) == 0 {
@@ -230,6 +262,9 @@ func (s *Store) Delete(ctx context.Context, sub, id string) error {
 // PurgeUser deletes every row of a person: browser subscriptions, the count row and the reminders (account erasure). It
 // returns how many rows it deleted. Idempotent: a second call finds nothing.
 func (s *Store) PurgeUser(ctx context.Context, sub string) (int, error) {
+	if sub == "" {
+		return 0, ErrEmptySubject
+	}
 	deleted := 0
 	var start map[string]types.AttributeValue
 	for {

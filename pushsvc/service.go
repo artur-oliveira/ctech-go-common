@@ -6,6 +6,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
+	"slices"
 
 	"gopkg.aoctech.app/api-commons/problem"
 	"gopkg.aoctech.app/api-commons/webpush"
@@ -108,16 +109,16 @@ func (s *Service) Subscribe(ctx context.Context, sub string, in SubscriptionInpu
 	}
 	id := SubscriptionID(in.Endpoint)
 	for _, previous := range owners {
-		// The move is for a shared browser: the new person's browser holds the same subscription, so it presents the
-		// same keys. A request that names the endpoint with other keys is not that browser and must not evict its owner.
+		// The move is for a shared browser: the new person's browser holds the same subscription, so it presents the same
+		// keys. A request that names the endpoint with other keys is not that browser and must not evict its owner. It is
+		// not refused either (whoever registered an endpoint first would lock its real owner out): it gets a row of its own,
+		// and a row with the wrong keys only yields a push the browser cannot decrypt.
 		held, err := s.store.List(ctx, previous)
 		if err != nil {
 			return nil, err
 		}
-		for _, h := range held {
-			if h.ID == id && !sameKeys(h, in) {
-				return nil, problem.Conflict("este dispositivo já pertence a outra conta")
-			}
+		if slices.ContainsFunc(held, func(h Subscription) bool { return h.ID == id && !sameKeys(h, in) }) {
+			continue
 		}
 		if err := s.store.Delete(ctx, previous, id); err != nil && !errors.Is(err, ErrNotFound) {
 			return nil, err

@@ -50,6 +50,9 @@ func (s *ReminderStore) key(sub, kind string) map[string]types.AttributeValue {
 
 // Put sets whether a reminder is on and its slot. It keeps last_sent_day, so moving the time cannot send twice a day.
 func (s *ReminderStore) Put(ctx context.Context, r Reminder) error {
+	if r.Sub == "" || r.Kind == "" {
+		return ErrEmptySubject
+	}
 	if r.Slot < 0 || r.Slot >= SlotsPerDay {
 		return fmt.Errorf("pushsvc: slot %d out of range", r.Slot)
 	}
