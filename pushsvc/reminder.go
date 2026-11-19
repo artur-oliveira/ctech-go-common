@@ -146,27 +146,3 @@ func (s *ReminderStore) MarkSent(ctx context.Context, sub, kind, day string) (bo
 	}
 	return err == nil, err
 }
-
-// DeleteAll removes every reminder of a person (account erasure).
-func (s *ReminderStore) DeleteAll(ctx context.Context, sub string) error {
-	var start map[string]types.AttributeValue
-	for {
-		res, err := s.base.Query(ctx, dynamo.QueryOpts{PK: userPK(sub), SKPrefix: reminderPrefix, Limit: 25, ExclusiveStartKey: start})
-		if err != nil {
-			return err
-		}
-		for _, it := range res.Items {
-			sk, ok := it["sk"].(*types.AttributeValueMemberS)
-			if !ok {
-				continue
-			}
-			if _, err := s.base.DeleteItem(ctx, userPK(sub), sk.Value); err != nil {
-				return err
-			}
-		}
-		if res.LastEvaluatedKey == nil {
-			return nil
-		}
-		start = res.LastEvaluatedKey
-	}
-}

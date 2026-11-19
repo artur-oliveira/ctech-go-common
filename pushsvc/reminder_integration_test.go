@@ -92,23 +92,6 @@ func TestListSlotPaginates(t *testing.T) {
 	}
 }
 
-func TestDeleteAllRemovesOnlyThatUsersReminders(t *testing.T) {
-	ctx := context.Background()
-	rs := newReminders(t)
-	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "streak", Enabled: true, Slot: 1})
-	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: true, Slot: 2})
-	_ = rs.Put(ctx, Reminder{Sub: "u2", Kind: "play", Enabled: true, Slot: 2})
-	if err := rs.DeleteAll(ctx, "u1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, ok, _ := rs.Get(ctx, "u1", "streak"); ok {
-		t.Error("u1 streak survived")
-	}
-	if _, ok, _ := rs.Get(ctx, "u2", "play"); !ok {
-		t.Error("u2 was purged")
-	}
-}
-
 func TestMoveSlotOnlyWhileEnabledAndUnmoved(t *testing.T) {
 	ctx := context.Background()
 	rs := newReminders(t)

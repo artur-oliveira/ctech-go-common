@@ -134,3 +134,41 @@ func (s *Store) count(ctx context.Context, sub string) (int, error) {
 	}
 	return strconv.Atoi(n.Value)
 }
+
+func TestPurgeUserRemovesEveryRowOfThePersonAndOnlyHers(t *testing.T) {
+	ctx := context.Background()
+	db, prefix := newTestDB(t)
+	st, rs := NewStore(db, prefix), NewReminderStore(db, prefix)
+	_, _ = st.Upsert(ctx, "u1", sub(1))
+	_, _ = st.Upsert(ctx, "u1", sub(2))
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "streak", Enabled: true, Slot: 80})
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: true, Slot: 76})
+	_, _ = st.Upsert(ctx, "u2", sub(3))
+	_ = rs.Put(ctx, Reminder{Sub: "u2", Kind: "play", Enabled: true, Slot: 76})
+
+	n, err := st.PurgeUser(ctx, "u1")
+	if err != nil || n != 5 { // 2 subscriptions + the count row + 2 reminders
+		t.Fatalf("PurgeUser = %d, %v; want 5 rows", n, err)
+	}
+	if list, _ := st.List(ctx, "u1"); len(list) != 0 {
+		t.Errorf("subscriptions left: %v", list)
+	}
+	if c, _ := st.count(ctx, "u1"); c != 0 {
+		t.Errorf("count row left: %d", c)
+	}
+	if _, ok, _ := rs.Get(ctx, "u1", "streak"); ok {
+		t.Error("reminder left")
+	}
+	if page, _, _ := rs.ListSlot(ctx, 80, 10, nil); len(page) != 0 {
+		t.Errorf("the slot index still lists the erased person: %+v", page)
+	}
+	if list, _ := st.List(ctx, "u2"); len(list) != 1 {
+		t.Errorf("another person's subscription was touched: %v", list)
+	}
+	if _, ok, _ := rs.Get(ctx, "u2", "play"); !ok {
+		t.Error("another person's reminder was touched")
+	}
+	if n, err := st.PurgeUser(ctx, "u1"); err != nil || n != 0 {
+		t.Errorf("a second purge = %d, %v; must be a no-op", n, err)
+	}
+}

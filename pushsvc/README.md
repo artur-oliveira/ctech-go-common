@@ -13,7 +13,7 @@ Design: `ctech-dfe/docs/specs/2026-11-17-web-push.md` (event-driven pushes) and
 | `Job`, `BuildPayload` | Notification contract v1 (`webpush/testdata/notification-v1.json`), 1 KB budget |
 | `Handler`, `LoadSender`, `Lambda` | The push-sender Lambda core: devices of each recipient, send, delete what is `Gone` |
 | `Invoker` | Async invoke of the sender (`Event`, expects 202) |
-| `ReminderStore`, `SlotOf`, `ParseHHMM`, `SlotsToProcess`, `Today` | Scheduled reminders in 15-minute São Paulo slots |
+| `ReminderStore`, `SlotOf`, `ParseHHMM`, `SlotsToProcess`, `Today`, `Tick` | Scheduled reminders in 15-minute São Paulo slots |
 | `cmd/push-keygen` | Prints the `aws ssm put-parameter` commands for a service's VAPID pair; writes nothing |
 
 ## The table

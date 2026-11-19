@@ -226,3 +226,30 @@ func (s *Store) Delete(ctx context.Context, sub, id string) error {
 	}
 	return err
 }
+
+// PurgeUser deletes every row of a person: browser subscriptions, the count row and the reminders (account erasure). It
+// returns how many rows it deleted. Idempotent: a second call finds nothing.
+func (s *Store) PurgeUser(ctx context.Context, sub string) (int, error) {
+	deleted := 0
+	var start map[string]types.AttributeValue
+	for {
+		res, err := s.base.Query(ctx, dynamo.QueryOpts{PK: userPK(sub), Limit: 25, ExclusiveStartKey: start})
+		if err != nil {
+			return deleted, err
+		}
+		for _, it := range res.Items {
+			sk, ok := it["sk"].(*types.AttributeValueMemberS)
+			if !ok {
+				continue
+			}
+			if _, err := s.base.DeleteItem(ctx, userPK(sub), sk.Value); err != nil {
+				return deleted, err
+			}
+			deleted++
+		}
+		if res.LastEvaluatedKey == nil {
+			return deleted, nil
+		}
+		start = res.LastEvaluatedKey
+	}
+}
