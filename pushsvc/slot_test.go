@@ -47,3 +47,13 @@ func TestSlotsToProcessDoesNotCrossMidnight(t *testing.T) {
 		t.Errorf("got %v", got)
 	}
 }
+
+func TestStartOfDayAndUntilMidnightUseBRT(t *testing.T) {
+	at := time.Date(2026, 11, 19, 2, 30, 0, 0, time.UTC) // 23:30 on the 18th in São Paulo
+	if got := StartOfDay(at); !got.Equal(time.Date(2026, 11, 18, 3, 0, 0, 0, time.UTC)) {
+		t.Errorf("StartOfDay = %v", got)
+	}
+	if got := UntilMidnight(at); got != 30*time.Minute {
+		t.Errorf("UntilMidnight = %v, want 30m", got)
+	}
+}

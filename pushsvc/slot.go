@@ -55,3 +55,12 @@ func SlotsToProcess(now time.Time) []int {
 	}
 	return []int{slot, slot - 1}
 }
+
+// StartOfDay is 00:00 São Paulo of the civil day of an instant.
+func StartOfDay(t time.Time) time.Time {
+	t = t.In(zone)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, zone)
+}
+
+// UntilMidnight is how long is left of the São Paulo civil day, the natural TTL of a push about "today".
+func UntilMidnight(t time.Time) time.Duration { return StartOfDay(t).AddDate(0, 0, 1).Sub(t) }
