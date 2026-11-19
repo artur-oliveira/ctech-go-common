@@ -2,6 +2,7 @@ package pushsvc
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -70,8 +71,8 @@ const (
 	tickFailed
 )
 
-// Run processes the slots of `now`. A failure of one person is logged and counted, never stops the others; only a failure
-// to read the slot itself returns an error, so the scheduler retries the run.
+// Run processes the slots of `now`. A failure of one person is logged and counted, never stops the others. A failure to read
+// the slot returns an error, and so does a run where every attempt failed and none was sent (a systematic fault).
 func (t *Tick) Run(ctx context.Context, now time.Time) error {
 	var sent, skipped, failed atomic.Int64
 	slots := SlotsToProcess(now)
@@ -108,6 +109,12 @@ func (t *Tick) Run(ctx context.Context, now time.Time) error {
 		}
 	}
 	slog.InfoContext(ctx, "push tick finished", "slots", slots, "sent", sent.Load(), "skipped", skipped.Load(), "failed", failed.Load())
+	// One person's failure is logged and counted, nothing more. But a run where every attempt failed and none succeeded is a
+	// systematic fault (a missing grant, schema drift): return it so it shows in the Lambda's Errors. The next run is safe
+	// (the day is only marked once a push is about to go out).
+	if failed.Load() > 0 && sent.Load() == 0 {
+		return fmt.Errorf("pushsvc: push tick failed for %d reminder(s) and sent none", failed.Load())
+	}
 	return nil
 }
 

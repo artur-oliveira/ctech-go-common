@@ -52,8 +52,7 @@ err := tick.Run(ctx, time.Now())                                            // f
 
 `Run` reads this slot and the one before (never across midnight), skips a person with no device (the day stays open), asks
 `Decide` (nil means "not today", also leaving the day open), marks the day with `MarkSent` **before** handing the job to the
-`Invoker` (a lost invoke is a push not sent, never one sent twice), and keeps going when one person fails. Only an unreadable
-slot returns an error.
+`Invoker` (a lost invoke is a push not sent, never one sent twice), and keeps going when one person fails. An unreadable slot returns an error, and so does a run where every attempt failed and none was sent (a missing grant, schema drift: it must show in the Lambda's Errors).
 
 `Put` keeps `last_sent_day`, so moving a reminder's time cannot send twice in a day. Time is `America/Sao_Paulo` for the whole
 family (a per-user zone is a later change).

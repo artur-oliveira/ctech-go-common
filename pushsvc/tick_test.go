@@ -130,8 +130,8 @@ func TestTickDoesNotMarkWhenTheRuleSaysNo(t *testing.T) {
 func TestTickMarksBeforeInvoking(t *testing.T) {
 	jobs := &fakeJobs{err: errors.New("lambda unavailable")}
 	tk := NewTick(newSlots(due("u1")), fakeDevs{"u1": 1}, fakeDecider{}, jobs)
-	if err := tk.Run(context.Background(), tickNow); err != nil {
-		t.Fatalf("a failed hand-off to the sender is logged, not a failed run: %v", err)
+	if err := tk.Run(context.Background(), tickNow); err == nil {
+		t.Fatal("when every hand-off failed the run reports it, so a broken sender shows in the Lambda's Errors")
 	}
 	jobs.err = nil
 	_ = tk.Run(context.Background(), tickNow)
@@ -166,5 +166,19 @@ func TestTickCallsOnSentOnlyForWhatWasSent(t *testing.T) {
 	_ = tk.Run(context.Background(), tickNow)
 	if len(got) != 1 || got[0] != "u1" {
 		t.Errorf("OnSent = %v, want only u1", got)
+	}
+}
+
+// A persistent failure (a missing IAM grant, schema drift) must show in the Lambda's Errors, or nobody notices the
+// reminders stopped. A mixed run (some people sent) stays a success: one person's failure is logged and counted.
+func TestTickReturnsAnErrorWhenEveryoneFailedAndNobodyWasSent(t *testing.T) {
+	jobs := &fakeJobs{}
+	tk := NewTick(newSlots(due("u1"), due("u2")), fakeDevs{"u1": 1, "u2": 1}, fakeDecider{fail: map[string]bool{"u1": true, "u2": true}}, jobs)
+	if err := tk.Run(context.Background(), tickNow); err == nil {
+		t.Error("every reminder failed and none was sent: the run must report it")
+	}
+	mixed := NewTick(newSlots(due("u1"), due("u2")), fakeDevs{"u1": 1, "u2": 1}, fakeDecider{fail: map[string]bool{"u1": true}}, &fakeJobs{})
+	if err := mixed.Run(context.Background(), tickNow); err != nil {
+		t.Errorf("one failure among sent pushes is not a failed run: %v", err)
 	}
 }
