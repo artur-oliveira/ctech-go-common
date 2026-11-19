@@ -121,3 +121,15 @@ func TestMoveSlotOnlyWhileEnabledAndUnmoved(t *testing.T) {
 		t.Errorf("a disabled reminder reappeared in the index: %+v", page)
 	}
 }
+
+// The slot index is eventually consistent, so a tick can still list a reminder the person switched off a moment ago: the
+// day mark must refuse it, or one push goes out after the opt-out.
+func TestMarkSentRefusesAReminderThatIsSwitchedOff(t *testing.T) {
+	ctx := context.Background()
+	rs := newReminders(t)
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: true, Slot: 76})
+	_ = rs.Put(ctx, Reminder{Sub: "u1", Kind: "play", Enabled: false, Slot: 76})
+	if ok, err := rs.MarkSent(ctx, "u1", "play", "2026-11-18"); err != nil || ok {
+		t.Errorf("MarkSent = %v, %v; a disabled reminder must not be marked (and so not sent)", ok, err)
+	}
+}

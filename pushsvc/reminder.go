@@ -135,14 +135,15 @@ func (s *ReminderStore) ListSlot(ctx context.Context, slot, limit int, cursor ma
 }
 
 // MarkSent records that the reminder went out on `day` and reports whether this call was the one: false means it was
-// already sent that day, or the reminder no longer exists. Call it before sending; at most one send per day wins.
+// already sent that day, or the reminder no longer exists or is switched off. Call it before sending; at most one send per day wins.
 func (s *ReminderStore) MarkSent(ctx context.Context, sub, kind, day string) (bool, error) {
 	_, err := s.base.UpdateItemRaw(ctx, &dynamodb.UpdateItemInput{
 		TableName:                 aws.String(s.base.TableName),
 		Key:                       s.key(sub, kind),
 		UpdateExpression:          aws.String("SET last_sent_day = :d"),
-		ConditionExpression:       aws.String("attribute_exists(pk) AND (attribute_not_exists(last_sent_day) OR last_sent_day <> :d)"),
-		ExpressionAttributeValues: map[string]types.AttributeValue{":d": sAV(day)},
+		ConditionExpression:       aws.String("attribute_exists(pk) AND #e = :on AND (attribute_not_exists(last_sent_day) OR last_sent_day <> :d)"),
+		ExpressionAttributeNames:  map[string]string{"#e": "enabled"},
+		ExpressionAttributeValues: map[string]types.AttributeValue{":d": sAV(day), ":on": &types.AttributeValueMemberBOOL{Value: true}},
 	})
 	if dynamo.IsConditionFailed(err) {
 		return false, nil
